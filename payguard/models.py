@@ -1,11 +1,12 @@
 """Core types of the purchase state machine (design §3). Money is always integer minor units."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
@@ -191,7 +192,7 @@ class Purchase:
             purchase_id=new_id(), principal_id=principal_id, task_id=task_id,
             purchase_intent_id=purchase_intent_id, request_fingerprint=request_fingerprint,
             attempt=attempt, supersedes_purchase_id=supersedes_purchase_id, approved_by=approved_by,
-            service_id=service_id, args=dict(args), quoted_amount_minor=None, authorized_amount_minor=None,
+            service_id=service_id, args=copy.deepcopy(args), quoted_amount_minor=None, authorized_amount_minor=None,
             asset=None, network=network, pay_to=None, payment_status=P.INTENT_RECORDED,
             fulfillment_status=FulfillmentStatus.PENDING, settlement_tx=None, valid_before=None,
             artifact_hash=None, reject_reason=None,
