@@ -135,7 +135,7 @@ When done, report: Status (DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT),
 | M3 mandate ∥ M4 conversion ∥ M5 reconciliation | 00:20–02:00 (3 people) or 00:20–03:30 (solo, in order M3 60 min → M4 45 min → M5 90 min) | | Record the backup video at the end of M5 (§8.5). **Solo note:** the solo schedule lands M5 at 03:30, so by the 03:00 rule the Supabase flip is stretch for a solo builder; only a 2–3 person team reaches M6 in its slot. |
 | M6 Supabase flip | after M5, 45 min | 45 min | **If M5 lands after 03:00, M6 moves to stretch** (§8.8, S10) |
 | M7 Bazaar mainnet | after M6 or M5, 60 min | 60 min | Miss → written fallback (§8.7) |
-| M8 stretch | 05:15–06:00 (or what remains) | 45 min | Cut in reverse order: 8.3, then 8.2, then 8.1 |
+| M8 stretch | 05:15–06:00 (or what remains) | 45 min core + whatever remains | Cut in reverse order: 8.6, 8.5, 8.4, 8.3, 8.2, then 8.1 |
 | M9 demo prep | 06:00–07:00 | 60 min (9.1: 25 min, 9.2: 25 min, 10 min slack) | `reset_demo.py --yes` is the last command before the demo |
 
 ---
@@ -5708,6 +5708,356 @@ git commit -m "feat(scripts): approve_retry creates a human-approved superseding
 **Exit criteria (auto):**
 - Run: `grep -c '^Ledger view: https://' docs/billguard/demo/checklist.md` → Expected: `1`
 
+### Task 8.4: Publish the BillGuard MCP server on Manufact `[W-STRETCH]`
+
+**Maps to:** none in the PRD (scope addition recorded in Appendix B.15); demo step 8/9 can mention "installable from Manufact". Does not change M0–M7: new files only, no new tool, no payment path.
+**Timebox:** 30 min hard. **Cut:** drop entirely; nothing depends on it.
+**SDK calls:** FastMCP `await mcp.get_tools()` (schema export). Manufact's own publish flow (CLI or dashboard) as its docs describe.
+**§7 tests covered:** none (the schema test keeps guarding the published tool list).
+
+**Files:**
+- Create: `scripts/export_tool_schema.py`, `mcp-tools.json` (generated), `docs/billguard/demo/manufact.md`
+- Modify: `README.md` (an "Install from Manufact" section)
+
+**Implementer brief:** Make the server installable from Manufact's MCP listing without weakening anything. The listing must launch the same stdio command Claude Desktop uses (`uv run --directory <repo> python -m billguard.server`), declare the env variables by NAME only (never a value; keys stay in the operator's `.env`), and advertise exactly the tools the schema test allows. Manufact's manifest format is whatever its current docs say: step 1 is to read them and write the format down; steps 2–4 are fixed regardless of that format. If Manufact's flow needs a hosted (non-stdio) server, stop and report `BLOCKED`: BillGuard is stdio-only for the demo.
+
+- [ ] **Step 1: Read Manufact's publishing docs and record the format**
+
+Create `docs/billguard/demo/manufact.md` with these headings and fill the first two from the docs: `## Manifest format (from docs, <date>)`, `## Publish command`, `## Listing:` (filled in step 4), `## Verified install`.
+
+- [ ] **Step 2: Export the tool schema the listing will advertise**
+
+`scripts/export_tool_schema.py`:
+```python
+"""Dump the MCP tool surface (names, descriptions, JSON schemas) for registry listings. Read-only."""
+from __future__ import annotations
+
+import asyncio
+import json
+import sys
+
+
+async def main() -> int:
+    from billguard.server import mcp
+
+    tools = await mcp.get_tools()
+    out = [{"name": n, "description": t.description, "parameters": t.parameters} for n, t in sorted(tools.items())]
+    json.dump({"server": "billguard", "transport": "stdio",
+               "command": ["uv", "run", "--directory", "<repo>", "python", "-m", "billguard.server"],
+               "env_names": ["BUYER_KEY_SEPOLIA", "BUYER_KEY_MAINNET", "SELLER_BASE_URL", "BILLGUARD_STORE",
+                             "BILLGUARD_POLICY", "RPC_URL_SEPOLIA", "RPC_URL_MAINNET"],
+               "tools": out}, sys.stdout, indent=2)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
+```
+Run: `uv run python scripts/export_tool_schema.py > mcp-tools.json`
+Expected: valid JSON; 8 tools (9 with `BAZAAR_URL` set); no tool named `approve_retry`; no parameter containing `force` or `retry`.
+
+- [ ] **Step 3: Write the Manufact manifest in the format from step 1, using `mcp-tools.json` as the source of names and descriptions, and add the README section**
+
+README addition:
+```markdown
+## Install from Manufact
+
+Listing: <url from docs/billguard/demo/manufact.md>. The listing launches `uv run --directory <repo> python -m billguard.server` over stdio.
+You still need a local `.env` (see `.env.example`); the listing names the variables but never holds values.
+```
+
+- [ ] **Step 4: Publish and verify a fresh install**
+
+Publish with the command from step 1. Record the listing URL under `## Listing:` as `Listing: https://...`. Install from the listing into Claude Desktop on a clean config, restart, and run `list_services`. Record the result under `## Verified install`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/export_tool_schema.py mcp-tools.json docs/billguard/demo/manufact.md README.md
+git commit -m "feat(publish): export tool schema and publish the MCP server on Manufact"
+```
+
+**Exit criteria (auto):**
+- Run: `uv run python scripts/export_tool_schema.py | python3 -c "import json,sys; d=json.load(sys.stdin); n=[t['name'] for t in d['tools']]; assert 'approve_retry' not in n; assert not any('force' in k or 'retry' in k for t in d['tools'] for k in t['parameters'].get('properties',{})); print(len(n))"` → Expected: `8` (or `9` with `BAZAAR_URL` set)
+- Run: `grep -c '^Listing: https://' docs/billguard/demo/manufact.md` → Expected: `1`
+- Run: `grep -ciE '0x[0-9a-f]{64}' mcp-tools.json docs/billguard/demo/manufact.md README.md` → Expected: all `0` (no key values anywhere)
+- Run: `uv run pytest tests/test_schema.py -q` → Expected: pass
+
+**Manual check:** `list_services` works from a Claude Desktop install that came from the listing.
+
+### Task 8.5: File a dispute on primitive.dev for a proven finding (human-run) `[W-STRETCH]`
+
+**Maps to:** none in the PRD (disputes with the seller are a PRD non-goal; this is a scope addition recorded in Appendix B.16). It implements the human side of the `report_to_seller` action in design §3 without giving the agent any new tool. Does not change M0–M7.
+**Timebox:** 40 min hard. **Cut:** keep the evidence bundle (`billguard/disputes.py` + `--dry-run`), drop the live POST.
+**SDK calls:** none from x402. `httpx.Client` for the primitive.dev API as its docs describe.
+**§7 tests covered:** none; adds `tests/test_disputes.py` (bundle contents and redaction).
+
+**Files:**
+- Create: `billguard/disputes.py`, `scripts/file_dispute.py`, `tests/test_disputes.py`
+- Modify: `billguard/models.py` (one enum member: `EvidenceKind.DISPUTE = "dispute"`), `.env.example` (`PRIMITIVE_API_URL=`, `PRIMITIVE_API_KEY=`)
+
+**Implementer brief:** Give the operator a one-command way to escalate a proven finding (`PAID_NO_DELIVERY`, `FULFILLMENT_FAILED`, `PRICE_MISMATCH`) to a dispute-resolution service, with BillGuard's evidence attached. Two parts. (1) A pure bundle builder that collects the purchase, its unresolved findings, and the evidence rows those findings reference, and **redacts the signed authorization header** (`payment_payload.header`, `signature`): it is a bearer token and must never leave the machine. (2) A script that prints the bundle (`--dry-run`) or POSTs it to primitive.dev, stores the returned case id/url as `dispute` evidence, and appends `dispute_filed` to the row's history. This is operator-only: **no MCP tool may call it** (the schema test must keep passing), and it moves no money. primitive.dev's exact endpoint and request shape come from its docs: read them first and put the adapter in one function so the bundle builder stays independent and tested.
+
+- [ ] **Step 1: Write the failing test**
+
+`tests/test_disputes.py`:
+```python
+import json
+
+from billguard.disputes import build_bundle
+from billguard.purchase import purchase
+from tests.conftest import FakeSeller
+
+
+async def test_bundle_has_findings_and_evidence_and_redacts_signature(deps, seller):
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")  # FULFILLMENT_FAILED after M4
+    b = build_bundle(deps, r["purchase_id"])
+    assert b["purchase"]["purchase_id"] == r["purchase_id"] and b["purchase"]["service_id"] == "convert"
+    assert b["seller"]["pay_to"] and b["seller"]["network"] == "eip155:84532"
+    codes = {f["code"] for f in b["findings"]}
+    assert "FULFILLMENT_FAILED" in codes
+    kinds = {e["kind"] for e in b["evidence"]}
+    assert {"validator", "artifact"} <= kinds
+    text = json.dumps(b)
+    assert "PAYMENT-SIGNATURE" not in text
+    for e in b["evidence"]:
+        if e["kind"] == "payment_payload":
+            assert e["payload"]["header"] == "<redacted>" and "signature" not in e["payload"]
+    assert b["explorer_url"].startswith("https://sepolia.basescan.org/")
+
+
+async def test_bundle_refuses_rows_without_unresolved_findings(deps, seller):
+    import pytest
+    r = await purchase(deps, "report", {"ticker": "ACME"}, "i-ok")
+    with pytest.raises(ValueError):
+        build_bundle(deps, r["purchase_id"])
+```
+
+- [ ] **Step 2: Run it and see it fail**
+
+Run: `uv run pytest tests/test_disputes.py -q`
+Expected: `ModuleNotFoundError: No module named 'billguard.disputes'`
+
+- [ ] **Step 3: Add the enum member and write `billguard/disputes.py`**
+
+In `billguard/models.py`, inside `EvidenceKind`, add:
+```python
+    DISPUTE = "dispute"
+```
+
+`billguard/disputes.py`:
+```python
+"""Evidence bundle for a human-filed dispute (the operator side of safe_next_actions.report_to_seller).
+
+Operator-only: scripts/file_dispute.py calls this; no MCP tool does. Moves no money.
+The signed authorization (payment_payload.header / signature) is a bearer token and is always redacted.
+"""
+from __future__ import annotations
+
+import os
+from typing import Any
+
+import httpx
+
+from billguard.models import EvidenceKind, FindingCode, history_entry
+from billguard.response import explorer_url
+
+DISPUTABLE = {FindingCode.PAID_NO_DELIVERY, FindingCode.FULFILLMENT_FAILED, FindingCode.PRICE_MISMATCH}
+REDACT = {"header", "signature"}
+
+
+def _redact(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if kind != EvidenceKind.PAYMENT_PAYLOAD:
+        return payload
+    out = {k: v for k, v in payload.items() if k not in REDACT}
+    out["header"] = "<redacted>"
+    return out
+
+
+def build_bundle(deps: Any, purchase_id: str) -> dict[str, Any]:
+    repo = deps.repo
+    row = repo.get_purchase(purchase_id)
+    if row is None:
+        raise ValueError(f"purchase {purchase_id} not found")
+    findings = [f for f in repo.findings_for_purchase(purchase_id) if f.resolved_at is None and f.code in DISPUTABLE]
+    if not findings:
+        raise ValueError(f"purchase {purchase_id} has no unresolved disputable finding")
+    wanted = {eid for f in findings for eid in f.evidence_ids}
+    wanted |= {e.evidence_id for e in repo.list_evidence(purchase_id)
+               if e.kind in (EvidenceKind.QUOTE, EvidenceKind.SETTLEMENT, EvidenceKind.CHAIN_CHECK, EvidenceKind.PAYMENT_PAYLOAD)}
+    evidence = [{"evidence_id": e.evidence_id, "kind": e.kind, "created_at": e.created_at, "payload": _redact(e.kind, e.payload)}
+                for e in repo.list_evidence(purchase_id) if e.evidence_id in wanted]
+    service = deps.registry.get(row.service_id)
+    return {
+        "principal_id": row.principal_id,
+        "purchase": {"purchase_id": row.purchase_id, "service_id": row.service_id, "attempt": row.attempt,
+                     "payment_status": str(row.payment_status), "fulfillment_status": str(row.fulfillment_status),
+                     "authorized_amount_minor": row.authorized_amount_minor, "currency": "USDC",
+                     "settlement_tx": row.settlement_tx, "created_at": row.created_at, "history": row.history},
+        "seller": {"pay_to": row.pay_to, "network": row.network, "url_template": service.url_template if service else None},
+        "findings": [f.to_dict() for f in findings],
+        "evidence": evidence,
+        "explorer_url": explorer_url(row),
+    }
+
+
+def file_with_primitive(bundle: dict[str, Any]) -> dict[str, Any]:
+    """POST the bundle to primitive.dev. Endpoint path and request shape per their docs (Task 8.5 step 4);
+    adapt ONLY this function. Returns a dict with at least {"case_id": ..., "url": ...}."""
+    base = os.environ["PRIMITIVE_API_URL"].rstrip("/")
+    key = os.environ["PRIMITIVE_API_KEY"]
+    resp = httpx.post(f"{base}/disputes", json=bundle, headers={"Authorization": f"Bearer {key}"}, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    return {"case_id": data.get("id") or data.get("case_id"), "url": data.get("url"), "raw": data}
+
+
+def record_dispute(deps: Any, purchase_id: str, result: dict[str, Any]) -> str:
+    ev = deps.repo.add_evidence(purchase_id, EvidenceKind.DISPUTE, result)
+    deps.repo.append_history(purchase_id, history_entry("dispute_filed", case_id=result.get("case_id")))
+    return ev
+```
+
+- [ ] **Step 4: Read primitive.dev's API docs and fix `file_with_primitive` to the real endpoint and shape**
+
+Record the endpoint, auth header and the fields they require in a comment above the function. If the API wants a different top-level shape, map the bundle into it inside this function only. Add the two env names to `.env.example` with empty values.
+
+- [ ] **Step 5: Write `scripts/file_dispute.py`**
+
+```python
+"""Operator-only: file a dispute for a purchase with an unresolved proven finding. Not an MCP tool.
+
+Usage: uv run python scripts/file_dispute.py <purchase_id> [--dry-run]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+from billguard.deps import get_deps
+from billguard.disputes import build_bundle, file_with_primitive, record_dispute
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("purchase_id")
+    ap.add_argument("--dry-run", action="store_true", help="print the bundle; send nothing")
+    args = ap.parse_args()
+    deps = get_deps()
+    bundle = build_bundle(deps, args.purchase_id)
+    if args.dry_run:
+        print(json.dumps(bundle, indent=2, default=str))
+        return 0
+    result = file_with_primitive(bundle)
+    ev = record_dispute(deps, args.purchase_id, result)
+    print(f"filed dispute case={result.get('case_id')} url={result.get('url')} evidence={ev}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+- [ ] **Step 6: Run tests, dry-run on a real row, file one live, commit**
+
+Run: `uv run pytest tests/test_disputes.py tests/test_schema.py -q` → all pass.
+Run: `uv run python scripts/file_dispute.py <purchase_id_of_a_FULFILLMENT_FAILED_row> --dry-run | grep -c '"header": "<redacted>"'` → `1`.
+Live (operator, with the env set): the script prints `filed dispute case=...`; `get_purchase` shows a `dispute` evidence row and `dispute_filed` in `history`.
+
+```bash
+git add billguard/disputes.py billguard/models.py scripts/file_dispute.py tests/test_disputes.py .env.example
+git commit -m "feat(disputes): operator-run dispute filing with redacted evidence bundle (primitive.dev)"
+```
+
+**Exit criteria (auto):**
+- Run: `uv run pytest tests/test_disputes.py tests/test_schema.py -q` → Expected: pass
+- Run: `grep -rn 'file_dispute\|build_bundle\|file_with_primitive' billguard/server.py | wc -l | tr -d ' '` → Expected: `0` (no MCP path)
+- Run: `grep -c '"<redacted>"' billguard/disputes.py` → Expected: `1`
+- Run: `grep -c 'PRIMITIVE_API_KEY=$' .env.example` → Expected: `1` (name only, no value)
+
+**Manual check:** one live case filed from the scenario-C row; the case shows the page-count evidence (expected 20, actual 12) and the Sepolia explorer link.
+
+### Task 8.6: A seller on Stripe's x402 machine payments, bought through the same code path `[W-STRETCH]`
+
+**Maps to:** PRD goal 2 and design §4 "no seller-side integration", extended to a sponsor's hosted x402 seller (scope addition recorded in Appendix B.17). Does not change M0–M7: an env-gated registry entry and tool, same as the Bazaar seller.
+**Timebox:** 45 min hard. **Cut:** drop entirely; if the Stripe endpoint quotes anything other than `exact` on `eip155:8453` canonical USDC, BillGuard rejects it `PRICE_MISMATCH` by design, and that rejection is itself demo-safe (show it, do not work around it).
+**SDK calls:** buyer side unchanged (`purchase()` → `await client.create_payment_payload`). Seller side: Stripe's machine-payments x402 integration as their docs describe (a `PaymentIntent` per settlement; preview API version).
+**§7 tests covered:** the schema test with a sixth env-gated tool present.
+
+**Facts to verify in Stripe's docs before starting (recorded on 2026-10-17 from public sources; confirm against Stripe's own pages):** Stripe's machine payments preview charges agents in USDC on Base using x402 and settles into the merchant's Stripe balance; it uses a preview API version; mainnet x402 there depends on Coinbase CDP facilitator keys; New York is excluded in the US, and non-US merchants must request access. If any of these block your account, take the cut.
+
+**Files:**
+- Create: `sellers_stripe/README.md` (how the endpoint was created, its URL, the price), `tests/test_stripe_seller_tool.py`
+- Modify: `billguard/registry.py` (second env-gated block, `STRIPE_SELLER_*`), `billguard/server.py` (second env-gated tool block), `.env.example`
+
+**Implementer brief:** Stand up one paid endpoint on Stripe's x402 offering (follow their x402 guide; a $0.01 USDC sample route is enough), then buy from it through BillGuard exactly like the Bazaar seller: quote → mandate → sign → send → verify, with the `non_empty` validator. The seller is a stranger to BillGuard; nothing in BillGuard changes except the env-gated registry entry and tool. Probe the endpoint with the bare SDK client first (same snippet as `bazaar_probe.py --smoke`) and record the 402's `accepts`: scheme, network, asset, `extra.assetTransferMethod`. If it is Permit2 or a non-USDC asset, stop and take the cut.
+
+- [ ] **Step 1: Create the Stripe x402 endpoint per Stripe's guide; record it**
+
+`sellers_stripe/README.md` with headings `## Endpoint URL`, `## Price (minor units)`, `## accepts from the unpaid 402` (paste), `## Stripe API version used`, `## Caveats` (region, preview).
+
+- [ ] **Step 2: Add the env-gated registry entry (after the Bazaar block in `load_registry`)**
+
+```python
+    stripe_url = os.environ.get("STRIPE_SELLER_URL")
+    if stripe_url:
+        services.append(Service(
+            "stripe_seller", os.environ.get("STRIPE_SELLER_TOOL_NAME", "get_stripe_seller_data"), "GET", stripe_url, MAINNET,
+            USDC[MAINNET], int(os.environ["STRIPE_SELLER_PRICE_MINOR"]),
+            os.environ.get("STRIPE_SELLER_CONTENT_TYPE", "application/json"), ("non_empty", "content_hash"), 40.0,
+        ))
+```
+Add `stripe_seller` to `allowed_services` in `policy.yaml` and the four `STRIPE_SELLER_*` names (empty) to `.env.example`.
+
+- [ ] **Step 3: Add the env-gated tool (after the Bazaar tool block in `server.py`)**
+
+```python
+if os.environ.get("STRIPE_SELLER_URL"):
+    _stripe_tool_name = os.environ.get("STRIPE_SELLER_TOOL_NAME", "get_stripe_seller_data")
+
+    @mcp.tool(name=_stripe_tool_name,
+              description=f"Buy from a seller hosted on Stripe's x402 machine payments ({os.environ['STRIPE_SELLER_URL']}); "
+                          f"price {int(os.environ['STRIPE_SELLER_PRICE_MINOR']) / 1_000_000:.4f} USDC on Base mainnet. {REUSE}")
+    async def get_stripe_seller_data(purchase_intent_id: str, task_id: str | None = None) -> dict[str, Any]:
+        return await purchase(get_deps(), "stripe_seller", {}, purchase_intent_id, task_id)
+```
+
+- [ ] **Step 4: Write `tests/test_stripe_seller_tool.py`**
+
+```python
+import importlib
+import os
+
+import pytest
+
+
+@pytest.mark.skipif(not os.environ.get("STRIPE_SELLER_URL"), reason="STRIPE_SELLER_URL not set")
+async def test_stripe_seller_tool_registered_without_force_param():
+    import billguard.server as srv
+
+    importlib.reload(srv)
+    tools = await srv.mcp.get_tools()
+    name = os.environ.get("STRIPE_SELLER_TOOL_NAME", "get_stripe_seller_data")
+    assert name in tools and set(tools[name].parameters["properties"]) == {"purchase_intent_id", "task_id"}
+```
+
+- [ ] **Step 5: Buy once through Claude Desktop, then commit**
+
+Prompt: *"Buy from the Stripe-hosted seller, purchase intent id demo-stripe-1."* Expected: `SETTLED` + `VERIFIED`, `network: eip155:8453`, the Stripe dashboard shows a PaymentIntent for the same amount, basescan shows the USDC transfer. If the quote is rejected `PRICE_MISMATCH`, record the `accepts` in the README and show the rejection in the demo instead.
+
+```bash
+git add sellers_stripe/README.md billguard/registry.py billguard/server.py policy.yaml .env.example tests/test_stripe_seller_tool.py
+git commit -m "feat(sellers): env-gated Stripe x402 seller bought through the same code path"
+```
+
+**Exit criteria (auto):**
+- Run: `STRIPE_SELLER_URL=https://example.invalid/x STRIPE_SELLER_PRICE_MINOR=10000 uv run pytest tests/test_stripe_seller_tool.py tests/test_schema.py -q` → Expected: pass
+- Run: `uv run pytest -q` → Expected: all pass (Stripe test skipped when env unset)
+- Run: `grep -c '^## accepts from the unpaid 402' sellers_stripe/README.md` → Expected: `1`
+
+**Manual mainnet check:** one settled purchase, or a recorded `PRICE_MISMATCH` rejection with the seller's `accepts` pasted in the README.
+
 ### Milestone M8 — Checkpoint and manual verification
 
 **Checkpoint:** each stretch item that shipped is demonstrable; nothing that shipped broke the M5 checkpoint.
@@ -5715,6 +6065,9 @@ git commit -m "feat(scripts): approve_retry creates a human-approved superseding
 - [ ] If 8.1 shipped: `approve_retry.py` on the scenario-B row created attempt 2 and a second transfer; the agent still has no tool for it (`test_schema.py` green).
 - [ ] If 8.2 ran: the two-transfer screenshot is referenced in the checklist.
 - [ ] If 8.3 ran: the ledger URL is in the checklist and the table updates during a purchase.
+- [ ] If 8.4 shipped: a Claude Desktop install from the Manufact listing lists the same tools; no key value appears in the listing.
+- [ ] If 8.5 shipped: one dispute case exists with redacted evidence; `grep -rn file_dispute billguard/server.py` is empty.
+- [ ] If 8.6 shipped: one settled Stripe-seller purchase (or its recorded `PRICE_MISMATCH`); the schema test is green with the extra tool.
 - [ ] `uv run python scripts/reset_demo.py --yes`.
 
 ---
@@ -5864,3 +6217,7 @@ git commit -m "docs(demo): fallback drills for design §10 risks"
 12. **`approve_retry.py` is M8 stretch** as design §8 orders it, even though PRD F12 lists it as a script and the PRD user story names it. If it does not ship, demo step 9 uses the design's wording ("a second payment needs a human; the agent has no tool for it"). It is about 15 lines over `run_from_quote`; do it first in M8.
 13. **`QUOTE_FAILED` reject reason.** A transport error on the unpaid request is not proof that a route is unprotected, so it is rejected without a proven `NOT_X402` finding. Nothing is signed either way.
 14. **45 s budget.** Quote and send timeouts are clipped to the remaining call budget, and each chain read is wrapped in `asyncio.wait_for` against it. The reconcile resend uses an 8 s cap (S4). No pytest covers wall-clock time; Task 5.3's live timing (scenario B under 45 s) is the check.
+15. **Manufact listing (Task 8.4) is a scope addition** the user asked for after the design was approved. It publishes the unchanged stdio server; env variables are listed by name only.
+16. **primitive.dev dispute filing (Task 8.5) is a scope addition.** The PRD lists disputes with the seller as a non-goal, so this is kept operator-only (a script, never an MCP tool), moves no money, and always redacts the signed authorization. It is the human side of the existing `report_to_seller` action.
+17. **Stripe x402 seller (Task 8.6) is a scope addition.** Stripe's machine-payments offering is seller-side (merchants accept USDC on Base via x402, settled to a Stripe balance), so it enters BillGuard as one more stranger seller bought through the unchanged code path, env-gated like the Bazaar seller. BillGuard itself never needs a Stripe account to pay: the buyer signs an EIP-3009 USDC authorization and the seller's facilitator settles it.
+18. **Facilitator accounts.** The x402.org facilitator is testnet-only, which is exactly where BillGuard's own sellers run; for every mainnet seller (Bazaar, Stripe) the seller's facilitator settles, so BillGuard as a buyer needs no facilitator account on any network.
