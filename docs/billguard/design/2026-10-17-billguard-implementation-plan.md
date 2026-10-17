@@ -56,7 +56,7 @@
 | `billguard/recovery.py` | M2 (stub) | `[W-MANDATE]` |
 | `billguard/reconcile.py` | M2 (stub) | `[W-RECONCILE]` |
 | `billguard/chain.py` | M5 | `[W-RECONCILE]` |
-| `billguard/outcome.py`, `billguard/response.py`, `billguard/purchase.py`, `billguard/deps.py` | M2 | `[W-CORE]` only (M3–M5 never edit these) |
+| `billguard/outcome.py`, `billguard/response.py`, `billguard/purchase.py`, `billguard/deps.py` | M2 | `[W-CORE]` only (M3–M5 never edit these; Task 2.9 edits `response.py` and may run alongside M3–M5) |
 | `billguard/server.py` | M2 | `[W-CORE]`; M7 adds the Bazaar tool block only |
 | `sellers/app.py` | M1 (routes, no stall) | `[W-SELLERS]`, then `[W-RECONCILE]` adds the stall hook in M5 |
 | `sellers/local_facilitator.py` | M1 | `[W-SELLERS]` |
@@ -1023,7 +1023,7 @@ Operator verification list (tick all):
 
 ## Milestone M2 — Core purchase flow `[W-CORE]`
 
-**Timebox:** 2 h (22:20–00:20; task timeboxes sum to 120 min: 10+20+15+10+10+35+15+5). **Cut if overrun:** nothing inside the flow is cut (design §8 has no step-2 cut); the overrun is absorbed by the 03:00 rule that moves the Supabase flip to stretch. Do not skip the pytest fake-seller suite: it is what makes M3–M5 safe to build in parallel.
+**Timebox:** 2 h (22:20–00:20; task timeboxes sum to 120 min: 10+20+15+10+10+35+15+5; Task 2.9 is 20 min more and may overlap M3–M5). **Cut if overrun:** nothing inside the flow is cut (design §8 has no step-2 cut); the overrun is absorbed by the 03:00 rule that moves the Supabase flip to stretch. Do not skip the pytest fake-seller suite: it is what makes M3–M5 safe to build in parallel.
 **Checkpoint (§8.2):** Claude Desktop buys `/report` through BillGuard and the response shows `SETTLED` + `VERIFIED` + a Sepolia transaction.
 
 **Interfaces frozen here for M3–M5** (bodies may be stubs; signatures may not change later):
@@ -3720,6 +3720,219 @@ git commit -m "feat(scripts): reset_demo wipes the principal's ledger between re
 
 **Manual Sepolia check:** after a reset, `get_spending_policy` in Claude Desktop shows `spent_minor: 0`.
 
+### Task 2.9: Per-call transaction, delivery-level and budget statistics on every response `[W-CORE]`
+
+**Maps to:** design §6 response shape (extends it; nothing removed), PRD user stories "cite what I paid and what I got" and "report spent, delivered, and unresolved", metric 6. Scope addition requested after design approval (Appendix B.19). Adds one read-only admin tool; no payment path.
+**Timebox:** 20 min. Lands at the end of M2; if M2 is already closed it may run **in parallel with M3–M5** because it only edits `response.py`, `server.py`, `store/base.py`, `store/sqlite.py` and new tests, none of which M3–M5 own.
+**SDK calls:** none new (FastMCP `@mcp.tool` for the admin tool).
+**§7 tests covered:** none in the design; adds `tests/test_response_stats.py`.
+
+**Files:**
+- Modify: `billguard/response.py` (three new sections in every response), `billguard/server.py` (`list_purchases` admin tool; `get_spending_policy` gains `budget`), `billguard/store/base.py` + `billguard/store/sqlite.py` (`list_purchases(principal_id, limit)`)
+- Test: `tests/test_response_stats.py`
+
+**Implementer brief:** Every paid tool, `get_purchase` and `reconcile_purchase` already return `build_response(...)`, so this is where the statistics go: a `transactions` list (what money moved or may have moved in this purchase, with proof), a `delivery` block (a level derived only from the deterministic checks BillGuard already ran, never a guessed probability), and a `budget` block (spent and remaining). Add a read-only `list_purchases` admin tool so the agent can recite every transaction of the session in one call. Levels are exactly four: `verified` (all checks passed), `partial` (artifact delivered but at least one named check failed), `unverified` (checks could not run), `none` (nothing delivered, or no settled payment). The `basis` string says why. Do not change any existing key.
+
+- [ ] **Step 1: Write the failing tests**
+
+`tests/test_response_stats.py`:
+```python
+import time
+
+from billguard.models import EvidenceKind, FulfillmentStatus, PaymentStatus, history_entry
+from billguard.purchase import purchase
+from billguard.response import build_response, compact_purchase
+from tests.conftest import FakeSeller
+from tests.test_guard import seed
+
+P = PaymentStatus
+
+
+async def test_verified_purchase_reports_transaction_delivery_and_budget(deps, seller):
+    r = await purchase(deps, "report", {"ticker": "ACME"}, "i1")
+    assert r["delivery"] == {"level": "verified", "basis": "all checks passed", "checks_passed": 4, "checks_total": 4,
+                             "failed": [], "artifact_sha256": r["artifact"]["sha256"], "proven_findings": []}
+    (tx,) = r["transactions"]
+    assert tx["status"] == "settled" and tx["proof"] == "seller_receipt" and tx["settlement_tx"] == seller.tx
+    assert tx["amount_minor"] == 500_000 and tx["amount_usdc"] == "0.500000" and tx["network"] == "eip155:84532"
+    assert tx["explorer_url"].startswith("https://sepolia.basescan.org/tx/")
+    assert r["budget"] == {"total_budget_minor": 5_000_000, "spent_minor": 500_000, "remaining_minor": 4_500_000,
+                           "spent_usdc": "0.500000", "remaining_usdc": "4.500000"}
+
+
+async def test_rejected_purchase_has_no_transactions(deps, seller):
+    r = await purchase(deps, "report_premium", {"ticker": "ACME"}, "i2")
+    assert r["transactions"] == [] and r["delivery"]["level"] == "none" and r["budget"]["spent_minor"] == 0
+
+
+async def test_unknown_settlement_is_a_pending_transaction(make_deps):
+    deps = make_deps(FakeSeller(mode="timeout"))
+    r = await purchase(deps, "report", {"ticker": "ACME"}, "i3")
+    (tx,) = r["transactions"]
+    assert tx["status"] == "unknown" and tx["proof"] == "pending" and tx["valid_before"] == r["valid_before"]
+    assert r["delivery"]["level"] == "none" and r["budget"]["spent_minor"] == 500_000  # unknown counts as spent
+
+
+def test_partial_none_and_unverified_levels(deps):
+    failed = seed(deps.repo, P.SETTLED, FulfillmentStatus.FAILED, intent="a")
+    deps.repo.add_evidence(failed.purchase_id, EvidenceKind.ARTIFACT, {"kind": "pdf", "content_type": "application/pdf",
+                           "sha256": "ab" * 32, "size": 10, "json": None, "path": "/x.pdf", "page_count": 12})
+    deps.repo.add_evidence(failed.purchase_id, EvidenceKind.VALIDATOR, {"name": "content_type", "passed": True})
+    deps.repo.add_evidence(failed.purchase_id, EvidenceKind.VALIDATOR, {"name": "pdf_page_count", "passed": False, "expected": 20, "actual": 12})
+    d = build_response(deps, deps.repo.get_purchase(failed.purchase_id))["delivery"]
+    assert d["level"] == "partial" and d["failed"] == ["pdf_page_count"] and d["checks_passed"] == 1 and d["checks_total"] == 2
+
+    nothing = seed(deps.repo, P.SETTLED, FulfillmentStatus.NO_DELIVERY, intent="b")
+    deps.repo.add_evidence(nothing.purchase_id, EvidenceKind.SETTLEMENT, {"source": "authorizationState", "block_number": 42})
+    r = build_response(deps, deps.repo.get_purchase(nothing.purchase_id))
+    assert r["delivery"]["level"] == "none" and r["delivery"]["basis"] == "settled with no artifact"
+    assert r["transactions"][0]["proof"] == "chain_check" and r["transactions"][0]["block_number"] == 42
+
+    unv = seed(deps.repo, P.SETTLED, FulfillmentStatus.UNVERIFIED, intent="c")
+    assert build_response(deps, deps.repo.get_purchase(unv.purchase_id))["delivery"]["level"] == "unverified"
+
+
+async def test_list_purchases_newest_first_with_levels(deps, seller):
+    a = await purchase(deps, "report", {"ticker": "ACME"}, "i1")
+    b = await purchase(deps, "research", {"topic": "t"}, "i2")
+    rows = deps.repo.list_purchases("test", limit=10)
+    assert [r.purchase_id for r in rows] == [b["purchase_id"], a["purchase_id"]]
+    c = compact_purchase(deps, rows[0])
+    assert set(c) >= {"purchase_id", "service_id", "payment_status", "fulfillment_status", "delivery_level",
+                      "amount_usdc", "settlement_tx", "explorer_url", "created_at"}
+    assert c["delivery_level"] == "verified" and c["amount_usdc"] == "0.750000"
+
+
+async def test_list_purchases_tool_and_policy_budget():
+    from billguard.server import mcp
+
+    tools = await mcp.get_tools()
+    assert "list_purchases" in tools and set(tools["list_purchases"].parameters["properties"]) <= {"limit"}
+```
+
+- [ ] **Step 2: Run and see failures**
+
+Run: `uv run pytest tests/test_response_stats.py -q`
+Expected: `ImportError: cannot import name 'compact_purchase'`
+
+- [ ] **Step 3: Add `list_purchases` to the store**
+
+`billguard/store/base.py`, inside `Repository` after `find_recent_by_fingerprint`:
+```python
+    def list_purchases(self, principal_id: str, limit: int = 50) -> list[Purchase]: ...
+```
+`billguard/store/sqlite.py`, after `find_recent_by_fingerprint`:
+```python
+    def list_purchases(self, principal_id: str, limit: int = 50) -> list[Purchase]:
+        rows = self.conn.execute(
+            "SELECT * FROM purchases WHERE principal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (principal_id, int(limit)),
+        ).fetchall()
+        return [_row(r) for r in rows]
+```
+(The Supabase backend in Task 6.1 implements the same method; its task text includes it.)
+
+- [ ] **Step 4: Extend `billguard/response.py`**
+
+Add after `explorer_url`:
+```python
+def usdc(minor: int | None) -> str | None:
+    return None if minor is None else f"{minor / 1_000_000:.6f}"
+
+
+def delivery_summary(row: Purchase, verification: list[dict[str, Any]], findings: list[Finding]) -> dict[str, Any]:
+    """A level derived ONLY from checks that ran. Never a guessed probability (design: schema-valid is not fact-checked)."""
+    passed = [v["name"] for v in verification if v.get("passed") is True]
+    failed = [v["name"] for v in verification if v.get("passed") is False]
+    fs = row.fulfillment_status
+    if row.payment_status != PaymentStatus.SETTLED:
+        level, basis = "none", "no settled payment"
+    elif fs == FulfillmentStatus.VERIFIED:
+        level, basis = "verified", "all checks passed"
+    elif fs == FulfillmentStatus.FAILED:
+        level, basis = "partial", "artifact delivered but failed: " + ", ".join(failed)
+    elif fs == FulfillmentStatus.NO_DELIVERY:
+        level, basis = "none", "settled with no artifact"
+    else:
+        level, basis = "unverified", "checks could not run"
+    return {"level": level, "basis": basis, "checks_passed": len(passed), "checks_total": len(verification), "failed": failed,
+            "artifact_sha256": row.artifact_hash,
+            "proven_findings": [f.code for f in findings if f.severity == "proven" and f.resolved_at is None]}
+
+
+def transaction_summary(row: Purchase, evidence: list[Any]) -> list[dict[str, Any]]:
+    """What money moved, or may have moved, for this purchase. Empty when nothing was ever sent."""
+    base = {"amount_minor": row.authorized_amount_minor, "amount_usdc": usdc(row.authorized_amount_minor),
+            "network": row.network, "pay_to": row.pay_to, "settlement_tx": row.settlement_tx, "block_number": None,
+            "explorer_url": explorer_url(row), "valid_before": row.valid_before}
+    if row.payment_status == PaymentStatus.SETTLED:
+        settle = [e.payload for e in evidence if e.kind == EvidenceKind.SETTLEMENT]
+        last = settle[-1] if settle else {}
+        proof = "chain_check" if last.get("source") == "authorizationState" else "seller_receipt"
+        return [{**base, "status": "settled", "proof": proof, "block_number": last.get("block_number")}]
+    if row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:
+        return [{**base, "status": "unknown", "proof": "pending", "explorer_url": None}]
+    if row.payment_status in (PaymentStatus.PAYLOAD_SIGNED, PaymentStatus.SENT):
+        return [{**base, "status": "in_progress", "proof": "pending", "explorer_url": None}]
+    return []  # REJECTED, PAYMENT_FAILED, ABANDONED, or nothing signed yet: no money moved
+
+
+def budget_summary(deps: Any) -> dict[str, Any]:
+    spent = deps.repo.spent_minor(deps.policy.principal_id)
+    total = deps.policy.total_budget_minor
+    return {"total_budget_minor": total, "spent_minor": spent, "remaining_minor": total - spent,
+            "spent_usdc": usdc(spent), "remaining_usdc": usdc(total - spent)}
+
+
+def compact_purchase(deps: Any, row: Purchase) -> dict[str, Any]:
+    """One line per purchase for list_purchases."""
+    evidence = deps.repo.list_evidence(row.purchase_id)
+    verification = [e.payload for e in evidence if e.kind == EvidenceKind.VALIDATOR]
+    findings = deps.repo.findings_for_purchase(row.purchase_id)
+    tx = transaction_summary(row, evidence)
+    return {"purchase_id": row.purchase_id, "purchase_intent_id": row.purchase_intent_id, "service_id": row.service_id,
+            "attempt": row.attempt, "payment_status": "IN_PROGRESS" if row.payment_status in IN_FLIGHT else str(row.payment_status),
+            "fulfillment_status": str(row.fulfillment_status),
+            "delivery_level": delivery_summary(row, verification, findings)["level"],
+            "amount_usdc": usdc(row.authorized_amount_minor), "settlement_tx": row.settlement_tx,
+            "proof": tx[0]["proof"] if tx else None, "explorer_url": explorer_url(row),
+            "unresolved_findings": [f.code for f in findings if f.resolved_at is None], "created_at": row.created_at}
+```
+In `build_response`, add these three keys to the returned dict (keep every existing key):
+```python
+        "transactions": transaction_summary(row, evidence),
+        "delivery": delivery_summary(row, verification, findings),
+        "budget": budget_summary(deps),
+```
+
+- [ ] **Step 5: Add the admin tool and the budget block in `billguard/server.py`**
+
+Import `budget_summary, compact_purchase` from `billguard.response`. Change `get_spending_policy` to return `{**deps.policy.to_dict(), "currency": "USDC", **budget_summary(deps)}` (keeps `spent_minor` and `remaining_minor`). Add after `list_findings`:
+```python
+@mcp.tool(description="List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. Read-only.")
+async def list_purchases(limit: int = 50) -> dict[str, Any]:
+    deps = get_deps()
+    rows = deps.repo.list_purchases(deps.policy.principal_id, limit=max(1, min(int(limit), 200)))
+    return {"budget": budget_summary(deps), "count": len(rows), "purchases": [compact_purchase(deps, r) for r in rows]}
+```
+
+- [ ] **Step 6: Run, then commit**
+
+Run: `uv run pytest tests/test_response_stats.py -q` → all pass. Run: `uv run pytest -q` → all pass.
+
+```bash
+git add billguard/response.py billguard/server.py billguard/store/base.py billguard/store/sqlite.py tests/test_response_stats.py
+git commit -m "feat(response): transactions, delivery level and budget on every result; list_purchases admin tool"
+```
+
+**Exit criteria (auto):**
+- Run: `uv run pytest tests/test_response_stats.py -q` → Expected: `passed`, 0 failed
+- Run: `uv run python -c "from billguard.response import delivery_summary; import inspect; src=inspect.getsource(delivery_summary); assert all(l in src for l in ('\"verified\"','\"partial\"','\"unverified\"','\"none\"')); print('levels ok')"` → Expected: `levels ok`
+- Run: `grep -c 'def list_purchases' billguard/server.py billguard/store/sqlite.py` → Expected: `1` each
+- Run: `uv run pytest tests/test_schema.py -q` (after M3) → Expected: pass (the new tool has no force/retry parameter)
+
+**Manual Sepolia check:** after any purchase in Claude Desktop the result shows `transactions`, `delivery` and `budget`; `list_purchases` lists the session's purchases newest first with a delivery level each; the research purchase shows `proof: chain_check` and `delivery.level: none`, the convert one `partial` with `failed: ["pdf_page_count"]`.
+
 ### Milestone M2 — Checkpoint and manual verification
 
 **Checkpoint (§8.2):** Claude buys a report.
@@ -3731,6 +3944,7 @@ Operator verification list:
 - [ ] Prompt *"buy the company report for ACME, purchase intent id demo-report-1"* returns `SETTLED` + `VERIFIED` + `settlement_tx`; the explorer link shows 0.50 USDC to the seller.
 - [ ] Prompt *"buy it again with the same purchase intent id"* returns the same `purchase_id` and no second transfer on the explorer.
 - [ ] `get_spending_policy` shows `spent_minor: 500000`; `list_findings` is empty.
+- [ ] (Task 2.9) The report result carries `transactions` (one settled entry with `proof: seller_receipt`), `delivery.level: verified`, and `budget`; `list_purchases` lists it.
 - [ ] `uv run python scripts/reset_demo.py --yes` prints counts and `spent now: 0 minor`.
 - [ ] Restart Claude Desktop once: the server comes back and `list_services` works (the lifespan recovery task did not block the handshake).
 
@@ -5237,6 +5451,7 @@ def test_create_cas_spent_findings_reset(repo, principal):
     assert repo.get_purchase(row.purchase_id).fulfillment_status == FulfillmentStatus.VERIFIED
     assert [r.attempt for r in repo.find_by_key(principal, "i1", "f" * 64)] == [1]
     assert repo.find_recent_by_fingerprint(principal, "f" * 64, time.time() - 60)[0].purchase_id == row.purchase_id
+    assert [r.purchase_id for r in repo.list_purchases(principal, limit=5)] == [row.purchase_id]
     assert repo.reset(principal) == {"purchases": 1, "evidence": 1, "findings": 1}
 ```
 
@@ -5316,6 +5531,11 @@ class SupabaseRepository:
     def find_recent_by_fingerprint(self, principal_id: str, request_fingerprint: str, since_ts: float) -> list[Purchase]:
         res = (self.c.table("purchases").select("*").eq("principal_id", principal_id).eq("request_fingerprint", request_fingerprint)
                .gte("created_at", since_ts).order("created_at", desc=True).execute())
+        return [_row(d) for d in res.data]
+
+    def list_purchases(self, principal_id: str, limit: int = 50) -> list[Purchase]:
+        res = (self.c.table("purchases").select("*").eq("principal_id", principal_id)
+               .order("created_at", desc=True).limit(int(limit)).execute())
         return [_row(d) for d in res.data]
 
     def update_status(self, purchase_id: str, expected: PaymentStatus, new: PaymentStatus,
@@ -6221,3 +6441,4 @@ git commit -m "docs(demo): fallback drills for design §10 risks"
 16. **primitive.dev dispute filing (Task 8.5) is a scope addition.** The PRD lists disputes with the seller as a non-goal, so this is kept operator-only (a script, never an MCP tool), moves no money, and always redacts the signed authorization. It is the human side of the existing `report_to_seller` action.
 17. **Stripe x402 seller (Task 8.6) is a scope addition.** Stripe's machine-payments offering is seller-side (merchants accept USDC on Base via x402, settled to a Stripe balance), so it enters BillGuard as one more stranger seller bought through the unchanged code path, env-gated like the Bazaar seller. BillGuard itself never needs a Stripe account to pay: the buyer signs an EIP-3009 USDC authorization and the seller's facilitator settles it.
 18. **Facilitator accounts.** The x402.org facilitator is testnet-only, which is exactly where BillGuard's own sellers run; for every mainnet seller (Bazaar, Stripe) the seller's facilitator settles, so BillGuard as a buyer needs no facilitator account on any network.
+19. **Per-call statistics (Task 2.9) are a scope addition.** Every response gains `transactions`, `delivery` and `budget`, and a read-only `list_purchases` tool exists. The delivery level is derived only from the checks that ran (`verified`, `partial`, `unverified`, `none`); BillGuard never emits a probability, consistent with "schema-valid is not fact-checked".
