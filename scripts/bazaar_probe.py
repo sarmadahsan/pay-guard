@@ -87,10 +87,27 @@ def candidates(max_price_minor: int) -> list[dict]:
                 "pay_to": o["pay_to"],
                 "extra": o["extra"],
                 "mime_type": getattr(item, "mime_type", None),
+                "smokeable": _smokeable(item),
             }
             if item.resource not in best or cand["amount"] < best[item.resource]["amount"]:
                 best[item.resource] = cand
     return sorted(best.values(), key=lambda c: c["amount"])
+
+
+def _smokeable(item) -> bool:
+    """True only when discovery metadata says a bare GET (no query/path params, headers or body) works.
+
+    Items without extensions.bazaar.info.input are unknown, hence not smokeable.
+    """
+    ext = getattr(item, "extensions", None)
+    bazaar = ext.get("bazaar") if isinstance(ext, dict) else None
+    info = bazaar.get("info") if isinstance(bazaar, dict) else None
+    inp = info.get("input") if isinstance(info, dict) else None
+    if not isinstance(inp, dict):
+        return False
+    if str(inp.get("method", "")).upper() != "GET":
+        return False
+    return not any(inp.get(k) for k in ("queryParams", "headers", "body", "pathParams"))
 
 
 def _is_permit2(extra: dict) -> bool:
@@ -132,24 +149,35 @@ def make_mainnet_client(account: Account, cand: dict) -> x402Client:
     return client
 
 
-async def smoke(cands: list[dict], n: int) -> None:
+async def smoke(cands: list[dict], n: int) -> bool:
+    """Pay the first n smokeable candidates; True only if all n ran and returned 2xx."""
     key = os.environ.get("BUYER_KEY_MAINNET")
     if not key:
         print("BUYER_KEY_MAINNET is not set (put it in .env); cannot smoke.", file=sys.stderr)
-        return
+        return False
     acct = Account.from_key(key)
-    chosen = cands[:n]
+    chosen = [c for c in cands if c["smokeable"]][:n]
+    if len(chosen) < n:
+        print(f"only {len(chosen)} smokeable (plain GET) candidates, wanted {n}", file=sys.stderr)
+    if not chosen:
+        return False
     print(f"mainnet buyer {acct.address}; planned total spend up to {sum(c['amount'] for c in chosen)} minor", file=sys.stderr)
+    ok = len(chosen) >= n
     for c in chosen:
         try:
             async with x402HttpxClient(make_mainnet_client(acct, c), timeout=60) as http:
                 r = await http.get(c["resource"])
             ct = r.headers.get("content-type", "")
             print(f"SMOKE {c['resource']} -> {r.status_code} {ct} settle_header={'PAYMENT-RESPONSE' in r.headers} body={r.text[:200]!r}")
+            if not 200 <= r.status_code < 300:
+                ok = False
         except PaymentError as e:
             print(f"SMOKE {c['resource']} -> PaymentError {e}")
+            ok = False
         except Exception as e:  # noqa: BLE001
             print(f"SMOKE {c['resource']} -> {type(e).__name__}: {e}")
+            ok = False
+    return ok
 
 
 def main() -> int:
@@ -165,9 +193,9 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         print(f"LISTING FAILED ({type(e).__name__}): {str(e)[:300]}\nUse the written fallback from design §8.7 for M7.", file=sys.stderr)
         return 1
-    print(f"{len(cands)} v2 USDC exact sellers on {MAINNET} at or below {args.max_price_minor} minor (permit2 excluded)")
+    print(f"{len(cands)} v2 USDC exact sellers on {MAINNET} at or below {args.max_price_minor} minor (permit2 excluded); {sum(c['smokeable'] for c in cands)} smokeable plain-GET (GET column)")
     for c in cands[:25]:
-        print(f"  {c['amount']:>8} minor  {c['resource']}  payTo={c['pay_to']}")
+        print(f"  {c['amount']:>8} minor  {'GET' if c['smokeable'] else '-  '}  {c['resource']}  payTo={c['pay_to']}")
     if args.pick:
         match = next((c for c in cands if c["resource"] == args.pick), None)
         if not match:
@@ -180,7 +208,8 @@ def main() -> int:
         print(f"BAZAAR_CONTENT_TYPE={match.get('mime_type') or 'application/json'}")
         print("BAZAAR_TOOL_NAME=get_public_data")
     if args.smoke:
-        asyncio.run(smoke(cands, args.smoke))
+        if not asyncio.run(smoke(cands, args.smoke)):
+            return 1
     return 0
 
 
