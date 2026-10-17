@@ -1,0 +1,33 @@
+# Secrets and wallets — never commit
+.env
+.env.*
+*.key
+*.pem
+keys/
+wallets/
+
+# Local state
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+artifacts/
+backup/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
