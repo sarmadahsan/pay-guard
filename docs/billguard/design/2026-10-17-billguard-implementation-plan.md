@@ -2786,10 +2786,10 @@ async def no_sleep(_s: float) -> None:
     return None
 
 
-async def never_used(_network: str, _from_addr: str, _nonce: str):
+async def never_used(_network: str, _from_addr: str, _nonce: str, _pay_to: str, _value_minor: int, _since_ts: float):
     """Hermetic default chain reader: authorization never seen on-chain, block time 0 (so never 'expired').
     Duck-typed like billguard.chain.ChainState (M5) so this file needs no import that does not exist yet."""
-    return SimpleNamespace(used=False, block_number=0, block_timestamp=0)
+    return SimpleNamespace(used=False, block_number=0, block_timestamp=0, event=None, tx_hash=None, transfer_ok=None)
 
 
 @pytest.fixture
@@ -3164,7 +3164,7 @@ class Deps:
     client_factory: Callable[[str], x402Client]
     http_factory: Callable[[Service], httpx.AsyncClient]
     artifact_dir: Path
-    chain_reader: Callable[..., Awaitable[Any]] | None = None  # M5 default: billguard.chain.authorization_state
+    chain_reader: Callable[..., Awaitable[Any]] | None = None  # M5: (network, from, nonce, pay_to, value_minor, since_ts) -> ChainState
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 
@@ -3783,7 +3783,7 @@ def test_partial_none_and_unverified_levels(deps):
     assert d["level"] == "partial" and d["failed"] == ["pdf_page_count"] and d["checks_passed"] == 1 and d["checks_total"] == 2
 
     nothing = seed(deps.repo, P.SETTLED, FulfillmentStatus.NO_DELIVERY, intent="b")
-    deps.repo.add_evidence(nothing.purchase_id, EvidenceKind.SETTLEMENT, {"source": "authorizationState", "block_number": 42})
+    deps.repo.add_evidence(nothing.purchase_id, EvidenceKind.SETTLEMENT, {"source": "chain:AuthorizationUsed+Transfer", "transaction": "0x" + "c1" * 32, "block_number": 42})
     r = build_response(deps, deps.repo.get_purchase(nothing.purchase_id))
     assert r["delivery"]["level"] == "none" and r["delivery"]["basis"] == "settled with no artifact"
     assert r["transactions"][0]["proof"] == "chain_check" and r["transactions"][0]["block_number"] == 42
@@ -3868,7 +3868,7 @@ def transaction_summary(row: Purchase, evidence: list[Any]) -> list[dict[str, An
     if row.payment_status == PaymentStatus.SETTLED:
         settle = [e.payload for e in evidence if e.kind == EvidenceKind.SETTLEMENT]
         last = settle[-1] if settle else {}
-        proof = "chain_check" if last.get("source") == "authorizationState" else "seller_receipt"
+        proof = "chain_check" if str(last.get("source", "")).startswith("chain") else "seller_receipt"
         return [{**base, "status": "settled", "proof": proof, "block_number": last.get("block_number")}]
     if row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:
         return [{**base, "status": "unknown", "proof": "pending", "explorer_url": None}]
@@ -4876,7 +4876,9 @@ git commit -m "feat(sellers): after-settle stall hook gated on /research-slow on
 **SDK calls:** `AUTHORIZATION_STATE_ABI` from `x402.mechanisms.evm.constants`; web3.py `Web3(HTTPProvider(rpc))`, `w3.eth.get_block("latest")`, `contract.functions.authorizationState(from, nonce).call(block_identifier=n)`. Reuses `outcome.send_paid_request` and `outcome.classify_outcome` for the resend.
 **§7 tests covered:** "the single-resend bound (the resend outcome does not recurse)", "each step 6 outcome branch" for the resend classification, `attempt+1 after PAYMENT_FAILED` precondition (PAYMENT_FAILED is produced here).
 
-**Implementer brief:** Implement design §5 for a `SETTLEMENT_UNKNOWN` row. Read `from`, `nonce`, `validBefore` and the encoded header from the `payment_payload` evidence. Poll `authorizationState(from, nonce)` up to 5 times, 2 s apart, stopping at the first `true` and respecting the call deadline; read the block number and **block timestamp at the same block** (S5). `true` → `SETTLED` with a `chain_check` evidence row and `history` entry (no tx hash; the response shows the block). `false` with block timestamp beyond `validBefore + 30 s` → `PAYMENT_FAILED` (proven finding). `false` and still valid → **one** resend of the identical stored header with an 8 s timeout, recorded as `resend` evidence and classified by `classify_outcome` (never re-entering reconcile); if that did not settle, **one more** poll, then stop. The `PAYMENT-REQUIRED.error` text from a 402 (for example `invalid_exact_evm_nonce_already_used`) is recorded but never decides money. The chain reader is injectable through `deps.chain_reader` so tests use fakes; the default is `chain.authorization_state`, which runs the blocking web3 call in a thread.
+**Implementer brief:** Implement design §5 for a `SETTLEMENT_UNKNOWN` row. Read `from`, `nonce`, `validBefore` and the encoded header from the `payment_payload` evidence. Poll `authorizationState(from, nonce)` up to 5 times, 2 s apart, stopping at the first `true` and respecting the call deadline; read the block number and **block timestamp at the same block** (S5).
+
+**Settlement proof (Appendix B.20, from external review).** Under EIP-3009 a nonce is consumed by a successful `transferWithAuthorization` **or** by `cancelAuthorization`, so `authorizationState == true` alone proves only "this authorization can never be used again", not "money moved". The chain reader therefore does three reads when the state is `true`: (1) `authorizationState` at block N; (2) an `eth_getLogs` for USDC's `AuthorizationUsed(authorizer, nonce)` and `AuthorizationCanceled(authorizer, nonce)` events (both fields are indexed; verified on Base Sepolia USDC), searched from the block the purchase started in, in windows of 100 blocks because public RPCs reject larger ranges; (3) for a `used` event, the receipt of that transaction, checking it holds a USDC `Transfer(from=buyer, to=payTo, value=amount)` log. Decision table: `true` + `used` event + matching `Transfer` → `SETTLED` with `settlement_tx` set to that transaction (the demo now gets a real tx link even in scenario B); `true` + `canceled` event → `PAYMENT_FAILED` (proven: nothing can move; only the buyer key can cancel, which BillGuard never does); `true` but no event found or `Transfer` mismatch → the row **stays `SETTLEMENT_UNKNOWN`** with a finding saying "nonce consumed, transfer unproven; do not retry; human review", no resend (a consumed nonce cannot be resent), and the duplicate guard keeps blocking retries; `false` with block timestamp beyond `validBefore + 30 s` → `PAYMENT_FAILED` (proven finding); `false` and still valid → **one** resend of the identical stored header with an 8 s timeout, recorded as `resend` evidence and classified by `classify_outcome` (never re-entering reconcile); if that did not settle, **one more** poll, then stop. The `PAYMENT-REQUIRED.error` text from a 402 (for example `invalid_exact_evm_nonce_already_used`) is recorded but never decides money. The chain reader is injectable through `deps.chain_reader` so tests use fakes; the default is `chain.authorization_state`, which runs the blocking web3 calls in a thread.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4889,15 +4891,23 @@ from billguard.purchase import purchase
 from billguard.reconcile import reconcile
 from tests.conftest import FakeSeller
 
+TX = "0x" + "c1" * 32
+
+
+def st(used, block, ts, event=None, tx=None, transfer_ok=None):
+    """ChainState factory. used=True defaults to a proven transfer (event 'used', tx, transfer_ok True)."""
+    if used and event is None:
+        event, tx, transfer_ok = "used", TX, True
+    return ChainState(used=used, block_number=block, block_timestamp=ts, event=event, tx_hash=tx, transfer_ok=transfer_ok)
+
 
 def chain_seq(*states):
-    """Fake deps.chain_reader: returns states in order, repeating the last one. states: (used, block, ts)."""
+    """Fake deps.chain_reader: returns ChainStates in order, repeating the last one. Records calls."""
     calls = []
 
-    async def reader(network, from_addr, nonce):
-        calls.append((network, from_addr, nonce))
-        used, bn, ts = states[min(len(calls) - 1, len(states) - 1)]
-        return ChainState(used=used, block_number=bn, block_timestamp=ts)
+    async def reader(network, from_addr, nonce, pay_to, value_minor, since_ts):
+        calls.append((network, from_addr, nonce, pay_to, value_minor))
+        return states[min(len(calls) - 1, len(states) - 1)]
 
     reader.calls = calls
     return reader
@@ -4911,24 +4921,61 @@ def codes(deps, pid):
     return [(f.code, f.resolved_at is None) for f in deps.repo.findings_for_purchase(pid)]
 
 
-async def test_chain_true_settles_and_no_artifact_is_paid_no_delivery(make_deps):
+async def test_used_event_with_matching_transfer_settles_and_no_artifact_is_paid_no_delivery(make_deps):
     seller = FakeSeller(mode="timeout")
-    reader = chain_seq((True, 123, int(time.time())))
+    reader = chain_seq(st(True, 123, int(time.time())))
     deps = make_deps(seller, chain_reader=reader)
     r = await purchase(deps, "research", {"topic": "agents"}, "i1")
     assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "NO_DELIVERY"
-    assert [c for c, _ in codes(deps, r["purchase_id"])] == ["PAID_NO_DELIVERY"]  # SETTLEMENT_UNKNOWN never created: resolved in-call
+    assert r["settlement_tx"] == TX and r["explorer_url"].endswith(TX)  # proven by AuthorizationUsed + Transfer
+    assert [c for c, _ in codes(deps, r["purchase_id"])] == ["PAID_NO_DELIVERY"]
     assert hist(deps, r["purchase_id"])[-5:] == ["SENT", "SETTLEMENT_UNKNOWN", "chain_check", "SETTLED", "NO_DELIVERY"]
     assert len(seller.paid) == 1 and len(reader.calls) == 1
+    assert reader.calls[0][3] == seller_pay_to(deps, r) and reader.calls[0][4] == 750_000  # reader gets payTo and amount to verify
     assert r["safe_next_actions"] == ["human_review", "report_to_seller"]
-    ev = {e.kind for e in deps.repo.list_evidence(r["purchase_id"])}
-    assert "chain_check" in ev and "resend" not in ev
+    ev = {e.kind: e.payload for e in deps.repo.list_evidence(r["purchase_id"])}
+    assert ev["settlement"]["source"] == "chain:AuthorizationUsed+Transfer" and ev["settlement"]["transaction"] == TX
+    assert "resend" not in ev
+
+
+def seller_pay_to(deps, r):
+    return deps.repo.get_purchase(r["purchase_id"]).pay_to
+
+
+async def test_nonce_consumed_without_transfer_proof_stays_unknown_and_never_resends(make_deps):
+    seller = FakeSeller(mode="timeout")
+    deps = make_deps(seller, chain_reader=chain_seq(st(True, 5, int(time.time()), event=None, tx=None, transfer_ok=None)))
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and r["settlement_tx"] is None
+    assert len(seller.paid) == 1  # a consumed nonce is never resent
+    f = [x for x in r["findings"] if x["code"] == "SETTLEMENT_UNKNOWN"]
+    assert f and "consumed" in f[0]["summary"] and "human_review" in f[0]["safe_next_actions"]
+    assert "human_review" in r["safe_next_actions"] and not any("pay" in a or "retry" in a for a in r["safe_next_actions"])
+    assert deps.repo.spent_minor("test") == 750_000  # still counts as spent
+    # a retry is blocked by the guard (M3) because the row is SETTLEMENT_UNKNOWN
+    again = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert again["purchase_id"] == r["purchase_id"] and len(seller.paid) == 1
+
+
+async def test_used_event_with_mismatched_transfer_stays_unknown(make_deps):
+    seller = FakeSeller(mode="timeout")
+    deps = make_deps(seller, chain_reader=chain_seq(st(True, 5, int(time.time()), event="used", tx=TX, transfer_ok=False)))
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and len(seller.paid) == 1
+
+
+async def test_canceled_authorization_is_payment_failed(make_deps):
+    seller = FakeSeller(mode="timeout")
+    deps = make_deps(seller, chain_reader=chain_seq(st(True, 5, int(time.time()), event="canceled", tx=TX, transfer_ok=False)))
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert r["payment_status"] == "PAYMENT_FAILED" and codes(deps, r["purchase_id"]) == [("PAYMENT_FAILED", True)]
+    assert deps.repo.spent_minor("test") == 0 and len(seller.paid) == 1
 
 
 async def test_expired_by_block_timestamp_is_payment_failed(make_deps):
     seller = FakeSeller(mode="timeout")
     far_future = int(time.time()) + 10_000  # chain time says the authorization window is long over
-    deps = make_deps(seller, chain_reader=chain_seq((False, 5, far_future)))
+    deps = make_deps(seller, chain_reader=chain_seq(st(False, 5, far_future)))
     r = await purchase(deps, "research", {"topic": "x"}, "i1")
     assert r["payment_status"] == "PAYMENT_FAILED"
     assert codes(deps, r["purchase_id"]) == [("PAYMENT_FAILED", True)]
@@ -4940,7 +4987,7 @@ async def test_expired_by_block_timestamp_is_payment_failed(make_deps):
 async def test_still_valid_resends_identical_header_once_and_settles(make_deps):
     seller = FakeSeller(mode="timeout")
     seller.paid_modes = ["timeout", "ok"]  # first paid request stalls, the resend delivers
-    deps = make_deps(seller, chain_reader=chain_seq((False, 7, int(time.time()))))
+    deps = make_deps(seller, chain_reader=chain_seq(st(False, 7, int(time.time()))))
     r = await purchase(deps, "research", {"topic": "x"}, "i1")
     assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "VERIFIED"
     assert len(seller.paid) == 2
@@ -4952,34 +4999,33 @@ async def test_still_valid_resends_identical_header_once_and_settles(make_deps):
 async def test_resend_nonce_used_triggers_one_more_poll_then_settles(make_deps):
     seller = FakeSeller(mode="timeout")
     seller.paid_modes = ["timeout", "nonce_used"]
-    reader = chain_seq((False, 1, int(time.time())), (False, 1, int(time.time())), (False, 1, int(time.time())),
-                       (False, 1, int(time.time())), (False, 1, int(time.time())), (True, 9, int(time.time())))
+    now = int(time.time())
+    reader = chain_seq(*([st(False, 1, now)] * 5), st(True, 9, now))
     deps = make_deps(seller, chain_reader=reader)
     r = await purchase(deps, "research", {"topic": "x"}, "i1")
-    assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "NO_DELIVERY"
+    assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "NO_DELIVERY" and r["settlement_tx"] == TX
     assert len(seller.paid) == 2  # exactly one resend
     resend = [e for e in deps.repo.list_evidence(r["purchase_id"]) if e.kind == "resend"][0]
     assert resend.payload["payment_required_error"] == "invalid_exact_evm_nonce_already_used"
-    assert len(reader.calls) == 6  # 5 polls, then 1 re-poll that returned true
+    assert len(reader.calls) == 6  # 5 polls, then 1 re-poll that returned a proven transfer
 
 
 async def test_resend_bound_is_one_per_call_and_row_stays_unknown(make_deps):
     seller = FakeSeller(mode="timeout")
-    deps = make_deps(seller, chain_reader=chain_seq((False, 1, int(time.time()))))
+    deps = make_deps(seller, chain_reader=chain_seq(st(False, 1, int(time.time()))))
     r = await purchase(deps, "research", {"topic": "x"}, "i1")
     assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and r["valid_before"] is not None
     assert len(seller.paid) == 2  # original + one resend, never more
     assert codes(deps, r["purchase_id"]) == [("SETTLEMENT_UNKNOWN", True)]
     assert "reconcile_purchase" in r["safe_next_actions"]
-    # a later reconcile call gets its own single resend
     row = deps.repo.get_purchase(r["purchase_id"])
-    await reconcile(deps, row, time.monotonic() + 45)
+    await reconcile(deps, row, time.monotonic() + 45)  # a later reconcile call gets its own single resend
     assert len(seller.paid) == 3
 
 
 async def test_deadline_exhausted_means_no_resend(make_deps):
     seller = FakeSeller(mode="timeout")
-    deps = make_deps(seller, chain_reader=chain_seq((False, 1, int(time.time()))))
+    deps = make_deps(seller, chain_reader=chain_seq(st(False, 1, int(time.time()))))
     r = await purchase(deps, "research", {"topic": "x"}, "i1")
     row = deps.repo.get_purchase(r["purchase_id"])
     before = len(seller.paid)
@@ -5002,11 +5048,20 @@ Expected: `ModuleNotFoundError: No module named 'billguard.chain'`
 - [ ] **Step 3: Write `billguard/chain.py`**
 
 ```python
-"""EIP-3009 authorizationState reads on the USDC contract (design §5). Chain time, not local time (S5)."""
+"""EIP-3009 settlement proof on the USDC contract (design §5, Appendix B.20). Chain time, not local time (S5).
+
+authorizationState(from, nonce) == true means the nonce was consumed by transferWithAuthorization OR
+cancelAuthorization. Money is proven to have moved only when an AuthorizationUsed(from, nonce) event is
+found and the same transaction holds a USDC Transfer(from -> payTo, value). Public RPCs reject large
+eth_getLogs ranges (Base Sepolia returned HTTP 413 at 2000 blocks), so logs are searched in 100-block windows
+starting from an estimate of the block the purchase started in.
+"""
 from __future__ import annotations
 
 import asyncio
+import math
 import os
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -5016,6 +5071,14 @@ from x402.mechanisms.evm.constants import AUTHORIZATION_STATE_ABI
 from billguard.registry import MAINNET, SEPOLIA, USDC
 
 RPC_ENV = {SEPOLIA: ("RPC_URL_SEPOLIA", "https://sepolia.base.org"), MAINNET: ("RPC_URL_MAINNET", "https://mainnet.base.org")}
+BLOCK_TIME_S = 2.0  # Base
+LOG_WINDOW = 100  # blocks per eth_getLogs call (public RPC limit)
+MAX_WINDOWS = 60  # 6000 blocks ≈ 3.3 h: more than any validBefore window
+START_MARGIN_BLOCKS = 60
+
+TOPIC_USED = Web3.keccak(text="AuthorizationUsed(address,bytes32)")
+TOPIC_CANCELED = Web3.keccak(text="AuthorizationCanceled(address,bytes32)")
+TOPIC_TRANSFER = Web3.keccak(text="Transfer(address,address,uint256)")
 
 
 @dataclass(frozen=True)
@@ -5023,6 +5086,9 @@ class ChainState:
     used: bool
     block_number: int
     block_timestamp: int
+    event: str | None = None  # "used" | "canceled" | None (nonce consumed but no event found in the searched range)
+    tx_hash: str | None = None  # transaction that emitted the event
+    transfer_ok: bool | None = None  # that tx holds USDC Transfer(from -> payTo, value)
 
 
 @lru_cache(maxsize=4)
@@ -5031,19 +5097,57 @@ def _w3(network: str) -> Web3:
     return Web3(Web3.HTTPProvider(os.environ.get(env, default), request_kwargs={"timeout": 10}))
 
 
-def _read(network: str, from_addr: str, nonce: str) -> ChainState:
+def _topic_addr(addr: str) -> bytes:
+    return bytes(12) + bytes.fromhex(addr[2:])
+
+
+def _find_event(w3: Web3, usdc: str, from_addr: str, nonce: bytes, pay_to: str, value_minor: int,
+                from_block: int, to_block: int) -> tuple[str | None, str | None, bool | None]:
+    """Search AuthorizationUsed / AuthorizationCanceled for (from, nonce) in small windows; verify the Transfer."""
+    start = max(0, from_block)
+    for _ in range(MAX_WINDOWS):
+        if start > to_block:
+            break
+        end = min(start + LOG_WINDOW - 1, to_block)
+        for topic0, label in ((TOPIC_USED, "used"), (TOPIC_CANCELED, "canceled")):
+            logs = w3.eth.get_logs({"address": usdc, "fromBlock": start, "toBlock": end,
+                                    "topics": [topic0, _topic_addr(from_addr), nonce]})
+            if not logs:
+                continue
+            tx_hash = logs[0]["transactionHash"].hex()
+            if label == "canceled":
+                return "canceled", tx_hash, False
+            receipt = w3.eth.get_transaction_receipt(logs[0]["transactionHash"])
+            ok = any(
+                lg["address"].lower() == usdc.lower() and len(lg["topics"]) == 3 and lg["topics"][0] == TOPIC_TRANSFER
+                and lg["topics"][1][-20:] == bytes.fromhex(from_addr[2:]) and lg["topics"][2][-20:] == bytes.fromhex(pay_to[2:])
+                and int.from_bytes(bytes(lg["data"]), "big") == int(value_minor)
+                for lg in receipt["logs"]
+            )
+            return "used", tx_hash, ok
+        start = end + 1
+    return None, None, None
+
+
+def _read(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int, since_ts: float) -> ChainState:
     w3 = _w3(network)
+    usdc = Web3.to_checksum_address(USDC[network])
     block = w3.eth.get_block("latest")
-    contract = w3.eth.contract(address=Web3.to_checksum_address(USDC[network]), abi=AUTHORIZATION_STATE_ABI)
+    bn, ts = int(block["number"]), int(block["timestamp"])
     nonce_bytes = bytes.fromhex(nonce[2:] if nonce.startswith("0x") else nonce)
-    used = contract.functions.authorizationState(Web3.to_checksum_address(from_addr), nonce_bytes).call(
-        block_identifier=block["number"])
-    return ChainState(used=bool(used), block_number=int(block["number"]), block_timestamp=int(block["timestamp"]))
+    contract = w3.eth.contract(address=usdc, abi=AUTHORIZATION_STATE_ABI)
+    used = bool(contract.functions.authorizationState(Web3.to_checksum_address(from_addr), nonce_bytes).call(block_identifier=bn))
+    if not used:
+        return ChainState(False, bn, ts)
+    from_block = bn - math.ceil(max(0.0, time.time() - since_ts) / BLOCK_TIME_S) - START_MARGIN_BLOCKS
+    event, tx_hash, ok = _find_event(w3, usdc, Web3.to_checksum_address(from_addr), nonce_bytes,
+                                     Web3.to_checksum_address(pay_to), int(value_minor), from_block, bn)
+    return ChainState(True, bn, ts, event, tx_hash, ok)
 
 
-async def authorization_state(network: str, from_addr: str, nonce: str) -> ChainState:
+async def authorization_state(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int, since_ts: float) -> ChainState:
     """Non-blocking wrapper: web3's HTTP provider is synchronous."""
-    return await asyncio.to_thread(_read, network, from_addr, nonce)
+    return await asyncio.to_thread(_read, network, from_addr, nonce, pay_to, value_minor, since_ts)
 ```
 
 - [ ] **Step 4: Replace `billguard/reconcile.py`**
@@ -5051,9 +5155,13 @@ async def authorization_state(network: str, from_addr: str, nonce: str) -> Chain
 ```python
 """Design §5 reconciliation for SETTLEMENT_UNKNOWN rows. Never creates a new payment.
 
-Order per call: poll authorizationState (≤5 × 2 s) → true: SETTLED; false past validBefore (+30 s, by
-block timestamp): PAYMENT_FAILED; false and valid: ONE resend of the identical stored header, classified
-by the step-6 rules without re-entering reconcile → if still unknown, ONE more poll → stop.
+Order per call: poll the chain (≤5 × 2 s) →
+  consumed nonce + AuthorizationUsed + matching Transfer: SETTLED (tx hash recorded);
+  consumed nonce + AuthorizationCanceled: PAYMENT_FAILED;
+  consumed nonce but unproven: stay SETTLEMENT_UNKNOWN, no resend, human review;
+  not consumed and past validBefore (+30 s, by block timestamp): PAYMENT_FAILED;
+  not consumed and still valid: ONE resend of the identical stored header, classified by the step-6 rules
+  without re-entering reconcile → if still unknown, ONE more poll → stop.
 """
 from __future__ import annotations
 
@@ -5080,14 +5188,16 @@ def _payment_payload(repo: Any, purchase_id: str) -> dict[str, Any] | None:
     return rows[-1].payload if rows else None
 
 
-async def _poll(deps: Any, reader: Any, row: Purchase, network: str, from_addr: str, nonce: str, deadline: float) -> ChainState | None:
+async def _poll(deps: Any, reader: Any, row: Purchase, pp: dict[str, Any], deadline: float) -> ChainState | None:
     last: ChainState | None = None
     polls = 0
     for i in range(POLL_ATTEMPTS):
         if time.monotonic() >= deadline:
             break
         try:  # review S4: an RPC read never runs past the call budget
-            last = await asyncio.wait_for(reader(network, from_addr, nonce), timeout=max(1.0, deadline - time.monotonic()))
+            last = await asyncio.wait_for(
+                reader(row.network, pp["from"], pp["nonce"], pp["to"], int(pp["value"]), row.created_at),
+                timeout=max(1.0, deadline - time.monotonic()))
         except asyncio.TimeoutError:
             log.warning("chain read timed out for %s", row.purchase_id)
             break
@@ -5098,29 +5208,54 @@ async def _poll(deps: Any, reader: Any, row: Purchase, network: str, from_addr: 
             await deps.sleep(POLL_INTERVAL_S)
     if last is not None:
         deps.repo.add_evidence(row.purchase_id, EvidenceKind.CHAIN_CHECK, {
-            "used": last.used, "block_number": last.block_number, "block_timestamp": last.block_timestamp,
-            "polls": polls, "from": from_addr, "nonce": nonce, "network": network})
-        deps.repo.append_history(row.purchase_id, history_entry("chain_check", used=last.used, block=last.block_number, polls=polls))
+            "used": last.used, "event": last.event, "tx_hash": last.tx_hash, "transfer_ok": last.transfer_ok,
+            "block_number": last.block_number, "block_timestamp": last.block_timestamp, "polls": polls,
+            "from": pp["from"], "nonce": pp["nonce"], "to": pp["to"], "value": pp["value"], "network": row.network})
+        deps.repo.append_history(row.purchase_id, history_entry("chain_check", used=last.used, event=last.event,
+                                                                 block=last.block_number, polls=polls))
     return last
 
 
 def _settle_from_chain(repo: Any, row: Purchase, state: ChainState) -> Purchase:
-    repo.add_evidence(row.purchase_id, EvidenceKind.SETTLEMENT, {"source": "authorizationState", "block_number": state.block_number,
-                                                                 "block_timestamp": state.block_timestamp, "network": row.network})
-    repo.update_status(row.purchase_id, P.SETTLEMENT_UNKNOWN, P.SETTLED, history_entry("SETTLED", via="chain_check", block=state.block_number))
+    repo.add_evidence(row.purchase_id, EvidenceKind.SETTLEMENT, {
+        "source": "chain:AuthorizationUsed+Transfer", "transaction": state.tx_hash, "block_number": state.block_number,
+        "block_timestamp": state.block_timestamp, "network": row.network})
+    repo.update_status(row.purchase_id, P.SETTLEMENT_UNKNOWN, P.SETTLED,
+                       history_entry("SETTLED", via="chain_check", tx=state.tx_hash, block=state.block_number),
+                       settlement_tx=state.tx_hash)
     repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
     return repo.get_purchase(row.purchase_id)
 
 
-def _fail(repo: Any, row: Purchase, state: ChainState, valid_before: int) -> Purchase:
+def _fail(repo: Any, row: Purchase, state: ChainState, valid_before: int, why: str) -> Purchase:
     chain_ev = [e.evidence_id for e in repo.list_evidence(row.purchase_id) if e.kind == EvidenceKind.CHAIN_CHECK][-1:]
     repo.update_status(row.purchase_id, P.SETTLEMENT_UNKNOWN, P.PAYMENT_FAILED,
-                       history_entry("PAYMENT_FAILED", block_timestamp=state.block_timestamp, valid_before=valid_before))
-    repo.add_finding(row.purchase_id, FindingCode.PAYMENT_FAILED, "proven",
-                     f"authorizationState is false and block time {state.block_timestamp} is past validBefore {valid_before} "
-                     f"(+{EXPIRY_MARGIN_S}s): the authorization can never land", chain_ev, [NextAction.GET_PURCHASE])
+                       history_entry("PAYMENT_FAILED", reason=why, block_timestamp=state.block_timestamp, valid_before=valid_before))
+    repo.add_finding(row.purchase_id, FindingCode.PAYMENT_FAILED, "proven", why, chain_ev, [NextAction.GET_PURCHASE])
     repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
     return repo.get_purchase(row.purchase_id)
+
+
+def _consumed_unproven(repo: Any, row: Purchase, state: ChainState) -> Purchase:
+    """Nonce consumed but no AuthorizationUsed+Transfer proof: never resend, never retry, ask a human."""
+    chain_ev = [e.evidence_id for e in repo.list_evidence(row.purchase_id) if e.kind == EvidenceKind.CHAIN_CHECK][-1:]
+    repo.append_history(row.purchase_id, history_entry("nonce_consumed_unproven", event=state.event, tx=state.tx_hash))
+    repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)  # replace with the sharper finding below
+    repo.add_finding(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN, "suspected",
+                     f"The authorization nonce is consumed on-chain but no matching USDC transfer to {row.pay_to} for "
+                     f"{row.authorized_amount_minor} minor was found (event={state.event}, tx={state.tx_hash}). "
+                     f"Do not retry: the authorization cannot be reused. Needs human review.",
+                     chain_ev, [NextAction.HUMAN_REVIEW, NextAction.RECONCILE])
+    return repo.get_purchase(row.purchase_id)
+
+
+def _decide_consumed(repo: Any, row: Purchase, state: ChainState) -> Purchase:
+    if state.event == "used" and state.transfer_ok:
+        return _settle_from_chain(repo, row, state)
+    if state.event == "canceled":
+        return _fail(repo, row, state, row.valid_before or 0,
+                     f"authorization was canceled on-chain in {state.tx_hash}; no transfer can ever land")
+    return _consumed_unproven(repo, row, state)
 
 
 async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
@@ -5137,18 +5272,20 @@ async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
     valid_before = int(pp["validBefore"])
 
     # 1-2. poll the chain first
-    state = await _poll(deps, reader, row, service.network, pp["from"], pp["nonce"], deadline)
+    state = await _poll(deps, reader, row, pp, deadline)
     if state is None:
         return row
     if state.used:
-        return _settle_from_chain(repo, row, state)
+        return _decide_consumed(repo, row, state)
     if state.block_timestamp > valid_before + EXPIRY_MARGIN_S:
-        return _fail(repo, row, state, valid_before)
+        return _fail(repo, row, state, valid_before,
+                     f"authorizationState is false and block time {state.block_timestamp} is past validBefore {valid_before} "
+                     f"(+{EXPIRY_MARGIN_S}s): the authorization can never land")
     if time.monotonic() + RESEND_TIMEOUT_S >= deadline:
         repo.append_history(row.purchase_id, history_entry("still_unknown", reason="call budget exhausted before resend", valid_before=valid_before))
         return row
 
-    # 3. still valid: one resend of the identical stored header (Sugg. 1a)
+    # 3. not consumed and still valid: one resend of the identical stored header (Sugg. 1a)
     method, url, body = service.build_request(row.args)
     async with deps.http_factory(service) as http:
         outcome = await send_paid_request(http, method, url, body, pp["header"], min(RESEND_TIMEOUT_S, service.timeout_s))
@@ -5160,11 +5297,11 @@ async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
         return row
 
     # one more chain poll, no further resend (Sugg. 1b)
-    state = await _poll(deps, reader, row, service.network, pp["from"], pp["nonce"], deadline)
+    state = await _poll(deps, reader, row, pp, deadline)
     if state is not None and state.used:
-        return _settle_from_chain(repo, row, state)
+        return _decide_consumed(repo, row, state)
     if state is not None and state.block_timestamp > valid_before + EXPIRY_MARGIN_S:
-        return _fail(repo, row, state, valid_before)
+        return _fail(repo, row, state, valid_before, "authorization expired by block time after the resend")
     repo.append_history(row.purchase_id, history_entry("still_unknown", valid_before=valid_before))
     return repo.get_purchase(row.purchase_id)
 ```
@@ -5190,6 +5327,8 @@ git commit -m "feat(reconcile): authorizationState poll, single identical resend
 - Run: `grep -c 'send_paid_request(' billguard/reconcile.py` → Expected: `1` (exactly one call; the import line has no parenthesis)
 - Run: `grep -c 'time.time()' billguard/reconcile.py` → Expected: `0` (chain time decides, not the local clock)
 - Run: `grep -c 'create_payment_payload' billguard/reconcile.py` → Expected: `0` (never a new payment)
+- Run: `grep -c 'AuthorizationUsed\|AuthorizationCanceled' billguard/chain.py` → Expected: `2` or more (settlement is proven by events, not by `authorizationState` alone)
+- Run: `grep -c 'LOG_WINDOW = 100' billguard/chain.py` → Expected: `1`
 
 **Manual Sepolia check:** Task 5.3.
 
@@ -5209,7 +5348,7 @@ git commit -m "feat(reconcile): authorizationState poll, single identical resend
 
 Run: `uv run python scripts/reset_demo.py --yes`. Seller running with the stall hook (`SELLER_STALL_S=90`).
 In Claude Desktop: *"Buy a research report on 'agent payments', purchase intent id demo-research-1."*
-Expected within one tool call (about 17–30 s): `payment_status: SETTLED`, `fulfillment_status: NO_DELIVERY`, `history` containing `SENT` → `SETTLEMENT_UNKNOWN` (reason `ReadTimeout`) → `chain_check` (`used: true`, block N) → `SETTLED` → `NO_DELIVERY`; findings `PAID_NO_DELIVERY` (proven); `safe_next_actions: [human_review, report_to_seller]`.
+Expected within one tool call (about 17–30 s): `payment_status: SETTLED`, `fulfillment_status: NO_DELIVERY`, a `settlement_tx` found from the `AuthorizationUsed` event with a basescan link, `history` containing `SENT` → `SETTLEMENT_UNKNOWN` (reason `ReadTimeout`) → `chain_check` (`used: true`, `event: used`, block N) → `SETTLED` → `NO_DELIVERY`; findings `PAID_NO_DELIVERY` (proven); `safe_next_actions: [human_review, report_to_seller]`.
 
 - [ ] **Step 2: Presenter line: "Try that research purchase again."**
 
@@ -5258,8 +5397,8 @@ from billguard.purchase import purchase
 from tests.conftest import FakeSeller
 
 
-async def used_on_chain(_network, _from, _nonce):
-    return ChainState(used=True, block_number=42, block_timestamp=int(time.time()))
+async def used_on_chain(_network, _from, _nonce, _pay_to, _value, _since):
+    return ChainState(used=True, block_number=42, block_timestamp=int(time.time()), event="used", tx_hash="0x" + "c1" * 32, transfer_ok=True)
 
 
 async def test_scenario_b_end_to_end(make_deps):
@@ -5268,6 +5407,7 @@ async def test_scenario_b_end_to_end(make_deps):
 
     first = await purchase(deps, "research", {"topic": "agent payments"}, "demo-research-1")
     assert first["payment_status"] == "SETTLED" and first["fulfillment_status"] == "NO_DELIVERY"
+    assert first["settlement_tx"] == "0x" + "c1" * 32  # proven by AuthorizationUsed + Transfer, so the demo shows a tx link
     assert [f["code"] for f in first["findings"]] == ["PAID_NO_DELIVERY"]
     assert first["safe_next_actions"] == ["human_review", "report_to_seller"]
 
@@ -6005,28 +6145,29 @@ git commit -m "feat(publish): export tool schema and publish the MCP server on M
 
 **Manual check:** `list_services` works from a Claude Desktop install that came from the listing.
 
-### Task 8.5: File a dispute on primitive.dev for a proven finding (human-run) `[W-STRETCH]`
+### Task 8.5: Email the seller a dispute through Primitive, with BillGuard's evidence (human-run) `[W-STRETCH]`
 
-**Maps to:** none in the PRD (disputes with the seller are a PRD non-goal; this is a scope addition recorded in Appendix B.16). It implements the human side of the `report_to_seller` action in design §3 without giving the agent any new tool. Does not change M0–M7.
-**Timebox:** 40 min hard. **Cut:** keep the evidence bundle (`billguard/disputes.py` + `--dry-run`), drop the live POST.
-**SDK calls:** none from x402. `httpx.Client` for the primitive.dev API as its docs describe.
-**§7 tests covered:** none; adds `tests/test_disputes.py` (bundle contents and redaction).
+**Maps to:** the human side of design §3's `report_to_seller` action; PRD non-goal "disputes with the seller" is respected because BillGuard arbitrates nothing: it sends the seller a documented complaint and records the thread. Scope addition (Appendix B.16). Does not change M0–M7.
+**Timebox:** 40 min hard. **Cut:** keep the redacted evidence bundle and the rendered email (`--dry-run`), drop the send and the reply check.
+**SDK calls:** none from x402. Primitive HTTP API (verified from `https://www.primitive.dev/openapi.json` on 2026-10-17): base `https://api.primitive.dev/v1`; `POST /send-mail` with required `from`, `to`, `subject` and optional `body_text`, `body_html`, `attachments`, `payload_attachments`, `in_reply_to`, `references`, `wait`, `wait_timeout_ms`; `GET /sent-emails/{id}`; `GET /sent-emails/{id}/reply`; `GET /threads/{id}`; `POST /endpoints` for a reply webhook. Primitive is email infrastructure for agents, not an arbitration service: there is no "case" object, only messages and threads. (It also exposes `/x402/*` endpoints; not used here.)
+**§7 tests covered:** none; adds `tests/test_disputes.py` (bundle contents, redaction, email rendering).
 
 **Files:**
 - Create: `billguard/disputes.py`, `scripts/file_dispute.py`, `tests/test_disputes.py`
-- Modify: `billguard/models.py` (one enum member: `EvidenceKind.DISPUTE = "dispute"`), `.env.example` (`PRIMITIVE_API_URL=`, `PRIMITIVE_API_KEY=`)
+- Modify: `billguard/models.py` (one enum member: `EvidenceKind.DISPUTE = "dispute"`), `billguard/registry.py` (optional `contact_email` field on `Service`, filled from `SELLER_CONTACT_EMAIL` for the four demo services), `.env.example` (`PRIMITIVE_API_KEY=`, `PRIMITIVE_FROM=`, `SELLER_CONTACT_EMAIL=`)
 
-**Implementer brief:** Give the operator a one-command way to escalate a proven finding (`PAID_NO_DELIVERY`, `FULFILLMENT_FAILED`, `PRICE_MISMATCH`) to a dispute-resolution service, with BillGuard's evidence attached. Two parts. (1) A pure bundle builder that collects the purchase, its unresolved findings, and the evidence rows those findings reference, and **redacts the signed authorization header** (`payment_payload.header`, `signature`): it is a bearer token and must never leave the machine. (2) A script that prints the bundle (`--dry-run`) or POSTs it to primitive.dev, stores the returned case id/url as `dispute` evidence, and appends `dispute_filed` to the row's history. This is operator-only: **no MCP tool may call it** (the schema test must keep passing), and it moves no money. primitive.dev's exact endpoint and request shape come from its docs: read them first and put the adapter in one function so the bundle builder stays independent and tested.
+**Implementer brief:** Give the operator a one-command way to send the seller a dispute email for a proven finding (`PAID_NO_DELIVERY`, `FULFILLMENT_FAILED`, `PRICE_MISMATCH`), with BillGuard's evidence attached, and to pull the seller's reply back into the ledger. Three parts. (1) A pure bundle builder that collects the purchase, its unresolved findings and the evidence rows they reference, and **redacts the signed authorization** (`payment_payload.header`, `signature`): it is a bearer token and must never leave the machine. (2) A renderer that turns the bundle into a short plain-text email (what was bought, what was paid, the tx link, what was delivered, which check failed, what BillGuard asks the seller to do) and attaches the bundle as `billguard-evidence.json`. (3) A script: `--dry-run` prints the email and bundle; otherwise `POST /send-mail` from `PRIMITIVE_FROM` to the service's `contact_email`, store the sent-email id, thread id and recipient as `dispute` evidence and append `dispute_sent` to history; `--check <purchase_id>` calls `GET /sent-emails/{id}/reply`, and if a reply exists stores it as `dispute` evidence (`direction: inbound`) and appends `dispute_reply`. Operator-only: **no MCP tool may call any of this** (the schema test must keep passing); no money moves. For the demo, `SELLER_CONTACT_EMAIL` is an inbox you control so the reply beat can be shown.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 `tests/test_disputes.py`:
 ```python
 import json
 
-from billguard.disputes import build_bundle
+import pytest
+
+from billguard.disputes import build_bundle, render_email
 from billguard.purchase import purchase
-from tests.conftest import FakeSeller
 
 
 async def test_bundle_has_findings_and_evidence_and_redacts_signature(deps, seller):
@@ -6034,10 +6175,8 @@ async def test_bundle_has_findings_and_evidence_and_redacts_signature(deps, sell
     b = build_bundle(deps, r["purchase_id"])
     assert b["purchase"]["purchase_id"] == r["purchase_id"] and b["purchase"]["service_id"] == "convert"
     assert b["seller"]["pay_to"] and b["seller"]["network"] == "eip155:84532"
-    codes = {f["code"] for f in b["findings"]}
-    assert "FULFILLMENT_FAILED" in codes
-    kinds = {e["kind"] for e in b["evidence"]}
-    assert {"validator", "artifact"} <= kinds
+    assert "FULFILLMENT_FAILED" in {f["code"] for f in b["findings"]}
+    assert {"validator", "artifact"} <= {e["kind"] for e in b["evidence"]}
     text = json.dumps(b)
     assert "PAYMENT-SIGNATURE" not in text
     for e in b["evidence"]:
@@ -6046,44 +6185,55 @@ async def test_bundle_has_findings_and_evidence_and_redacts_signature(deps, sell
     assert b["explorer_url"].startswith("https://sepolia.basescan.org/")
 
 
+async def test_render_email_is_plain_text_with_the_facts(deps, seller):
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    b = build_bundle(deps, r["purchase_id"])
+    subject, body = render_email(b)
+    assert subject.startswith("Dispute: ") and r["purchase_id"] in subject
+    assert "2.000000 USDC" in body and "pdf_page_count" in body and b["explorer_url"] in body
+    assert "<redacted>" not in body and "PAYMENT-SIGNATURE" not in body
+
+
 async def test_bundle_refuses_rows_without_unresolved_findings(deps, seller):
-    import pytest
     r = await purchase(deps, "report", {"ticker": "ACME"}, "i-ok")
     with pytest.raises(ValueError):
         build_bundle(deps, r["purchase_id"])
 ```
 
-- [ ] **Step 2: Run it and see it fail**
+- [ ] **Step 2: Run and see it fail**
 
 Run: `uv run pytest tests/test_disputes.py -q`
 Expected: `ModuleNotFoundError: No module named 'billguard.disputes'`
 
-- [ ] **Step 3: Add the enum member and write `billguard/disputes.py`**
+- [ ] **Step 3: Enum member, registry contact field, and `billguard/disputes.py`**
 
-In `billguard/models.py`, inside `EvidenceKind`, add:
-```python
-    DISPUTE = "dispute"
-```
+In `billguard/models.py`, inside `EvidenceKind`, add `DISPUTE = "dispute"`.
+
+In `billguard/registry.py`, add to `Service` (after `timeout_s`): `contact_email: str | None = None`, and in `load_registry` set `contact_email=os.environ.get("SELLER_CONTACT_EMAIL")` on the four demo services (`dataclasses.replace` after construction is fine).
 
 `billguard/disputes.py`:
 ```python
-"""Evidence bundle for a human-filed dispute (the operator side of safe_next_actions.report_to_seller).
+"""Dispute email to the seller via Primitive (operator side of safe_next_actions.report_to_seller).
 
-Operator-only: scripts/file_dispute.py calls this; no MCP tool does. Moves no money.
-The signed authorization (payment_payload.header / signature) is a bearer token and is always redacted.
+Operator-only: scripts/file_dispute.py calls this; no MCP tool does. Moves no money. The signed
+authorization (payment_payload.header / signature) is a bearer token and is always redacted.
+Primitive API: base https://api.primitive.dev/v1, POST /send-mail, GET /sent-emails/{id}/reply.
 """
 from __future__ import annotations
 
+import base64
+import json
 import os
 from typing import Any
 
 import httpx
 
 from billguard.models import EvidenceKind, FindingCode, history_entry
-from billguard.response import explorer_url
+from billguard.response import explorer_url, usdc
 
 DISPUTABLE = {FindingCode.PAID_NO_DELIVERY, FindingCode.FULFILLMENT_FAILED, FindingCode.PRICE_MISMATCH}
 REDACT = {"header", "signature"}
+API = os.environ.get("PRIMITIVE_API_BASE_URL", "https://api.primitive.dev/v1").rstrip("/")
 
 
 def _redact(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -6112,42 +6262,97 @@ def build_bundle(deps: Any, purchase_id: str) -> dict[str, Any]:
         "principal_id": row.principal_id,
         "purchase": {"purchase_id": row.purchase_id, "service_id": row.service_id, "attempt": row.attempt,
                      "payment_status": str(row.payment_status), "fulfillment_status": str(row.fulfillment_status),
-                     "authorized_amount_minor": row.authorized_amount_minor, "currency": "USDC",
-                     "settlement_tx": row.settlement_tx, "created_at": row.created_at, "history": row.history},
-        "seller": {"pay_to": row.pay_to, "network": row.network, "url_template": service.url_template if service else None},
+                     "authorized_amount_minor": row.authorized_amount_minor, "amount_usdc": usdc(row.authorized_amount_minor),
+                     "currency": "USDC", "settlement_tx": row.settlement_tx, "created_at": row.created_at, "history": row.history},
+        "seller": {"pay_to": row.pay_to, "network": row.network, "url_template": service.url_template if service else None,
+                   "contact_email": service.contact_email if service else None},
         "findings": [f.to_dict() for f in findings],
         "evidence": evidence,
         "explorer_url": explorer_url(row),
     }
 
 
-def file_with_primitive(bundle: dict[str, Any]) -> dict[str, Any]:
-    """POST the bundle to primitive.dev. Endpoint path and request shape per their docs (Task 8.5 step 4);
-    adapt ONLY this function. Returns a dict with at least {"case_id": ..., "url": ...}."""
-    base = os.environ["PRIMITIVE_API_URL"].rstrip("/")
-    key = os.environ["PRIMITIVE_API_KEY"]
-    resp = httpx.post(f"{base}/disputes", json=bundle, headers={"Authorization": f"Bearer {key}"}, timeout=30)
+def render_email(bundle: dict[str, Any]) -> tuple[str, str]:
+    p, f = bundle["purchase"], bundle["findings"]
+    checks = [e["payload"] for e in bundle["evidence"] if e["kind"] == EvidenceKind.VALIDATOR and e["payload"].get("passed") is False]
+    lines = [
+        f"Hello,",
+        "",
+        f"On {p['created_at']:.0f} (unix) our purchasing agent paid your service '{p['service_id']}' {p['amount_usdc']} USDC "
+        f"on {bundle['seller']['network']} (to {bundle['seller']['pay_to']}).",
+        f"Settlement: {bundle['explorer_url'] or p['settlement_tx'] or 'proven on-chain (see attached evidence)'}",
+        "",
+        "What went wrong:",
+    ]
+    for x in f:
+        lines.append(f"  - {x['code']} ({x['severity']}): {x['summary']}")
+    for c in checks:
+        lines.append(f"  - check '{c.get('name')}' failed: expected {c.get('expected')!r}, actual {c.get('actual')!r}")
+    lines += [
+        "",
+        "We ask you to deliver the purchased item or refund the amount above. The attached billguard-evidence.json holds the quote, "
+        "the settlement proof, the delivered artifact's hash and the failed checks. Reply to this email to resolve.",
+        "",
+        f"Reference: {p['purchase_id']}",
+    ]
+    return f"Dispute: {p['service_id']} purchase {p['purchase_id']} ({p['amount_usdc']} USDC)", "\n".join(lines)
+
+
+def send_dispute(bundle: dict[str, Any]) -> dict[str, Any]:
+    """POST /send-mail. Returns Primitive's response (at least an id). Adapt attachment encoding to the OpenAPI schema."""
+    to = bundle["seller"]["contact_email"]
+    if not to:
+        raise ValueError("service has no contact_email (set SELLER_CONTACT_EMAIL)")
+    subject, body = render_email(bundle)
+    payload = {
+        "from": os.environ["PRIMITIVE_FROM"],
+        "to": [to],
+        "subject": subject,
+        "body_text": body,
+        "attachments": [{"filename": "billguard-evidence.json", "content_type": "application/json",
+                         "content_base64": base64.b64encode(json.dumps(bundle, default=str).encode()).decode()}],
+        "wait": True,
+    }
+    resp = httpx.post(f"{API}/send-mail", json=payload, headers={"Authorization": f"Bearer {os.environ['PRIMITIVE_API_KEY']}"}, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def check_reply(sent_id: str) -> dict[str, Any] | None:
+    resp = httpx.get(f"{API}/sent-emails/{sent_id}/reply", headers={"Authorization": f"Bearer {os.environ['PRIMITIVE_API_KEY']}"}, timeout=30)
+    if resp.status_code == 404:
+        return None
     resp.raise_for_status()
     data = resp.json()
-    return {"case_id": data.get("id") or data.get("case_id"), "url": data.get("url"), "raw": data}
+    return data or None
 
 
-def record_dispute(deps: Any, purchase_id: str, result: dict[str, Any]) -> str:
-    ev = deps.repo.add_evidence(purchase_id, EvidenceKind.DISPUTE, result)
-    deps.repo.append_history(purchase_id, history_entry("dispute_filed", case_id=result.get("case_id")))
+def record_sent(deps: Any, purchase_id: str, to: str, result: dict[str, Any]) -> str:
+    ev = deps.repo.add_evidence(purchase_id, EvidenceKind.DISPUTE, {"direction": "outbound", "to": to, "provider": "primitive", **result})
+    deps.repo.append_history(purchase_id, history_entry("dispute_sent", to=to, sent_id=result.get("id")))
+    return ev
+
+
+def record_reply(deps: Any, purchase_id: str, reply: dict[str, Any]) -> str:
+    ev = deps.repo.add_evidence(purchase_id, EvidenceKind.DISPUTE, {"direction": "inbound", "provider": "primitive", **reply})
+    deps.repo.append_history(purchase_id, history_entry("dispute_reply", reply_id=reply.get("id")))
     return ev
 ```
 
-- [ ] **Step 4: Read primitive.dev's API docs and fix `file_with_primitive` to the real endpoint and shape**
+- [ ] **Step 4: Check the attachment field shape against the OpenAPI spec and adjust `send_dispute` only**
 
-Record the endpoint, auth header and the fields they require in a comment above the function. If the API wants a different top-level shape, map the bundle into it inside this function only. Add the two env names to `.env.example` with empty values.
+Run: `curl -s https://www.primitive.dev/openapi.json | python3 -c "import json,sys; d=json.load(sys.stdin); s=d['paths']['/send-mail']['post']['requestBody']['content']['application/json']['schema']; r=s.get('\$ref'); s=d['components']['schemas'][r.split('/')[-1]] if r else s; print(json.dumps(s['properties'].get('attachments'), indent=1)[:1500]); print(json.dumps(s['properties'].get('payload_attachments'), indent=1)[:800])"`
+Adjust the `attachments` entry (or use `payload_attachments` for the JSON object) to the printed schema. Add `PRIMITIVE_API_KEY=`, `PRIMITIVE_FROM=` (a sending address on your Primitive account) and `SELLER_CONTACT_EMAIL=` to `.env.example`, values empty.
 
 - [ ] **Step 5: Write `scripts/file_dispute.py`**
 
 ```python
-"""Operator-only: file a dispute for a purchase with an unresolved proven finding. Not an MCP tool.
+"""Operator-only: email the seller a dispute for a purchase with an unresolved proven finding. Not an MCP tool.
 
-Usage: uv run python scripts/file_dispute.py <purchase_id> [--dry-run]
+Usage:
+  uv run python scripts/file_dispute.py <purchase_id> --dry-run     # print email + bundle, send nothing
+  uv run python scripts/file_dispute.py <purchase_id>               # send via Primitive, record as evidence
+  uv run python scripts/file_dispute.py <purchase_id> --check       # pull the seller's reply into the ledger
 """
 from __future__ import annotations
 
@@ -6156,22 +6361,36 @@ import json
 import sys
 
 from billguard.deps import get_deps
-from billguard.disputes import build_bundle, file_with_primitive, record_dispute
+from billguard.disputes import build_bundle, check_reply, record_reply, record_sent, render_email, send_dispute
+from billguard.models import EvidenceKind
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("purchase_id")
-    ap.add_argument("--dry-run", action="store_true", help="print the bundle; send nothing")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--check", action="store_true", help="look for the seller's reply to the last sent dispute")
     args = ap.parse_args()
     deps = get_deps()
-    bundle = build_bundle(deps, args.purchase_id)
-    if args.dry_run:
-        print(json.dumps(bundle, indent=2, default=str))
+    if args.check:
+        sent = [e for e in deps.repo.list_evidence(args.purchase_id) if e.kind == EvidenceKind.DISPUTE and e.payload.get("direction") == "outbound"]
+        if not sent:
+            print("no dispute sent for this purchase")
+            return 1
+        reply = check_reply(sent[-1].payload.get("id"))
+        if reply is None:
+            print("no reply yet")
+            return 0
+        print(f"reply recorded as evidence {record_reply(deps, args.purchase_id, reply)}")
         return 0
-    result = file_with_primitive(bundle)
-    ev = record_dispute(deps, args.purchase_id, result)
-    print(f"filed dispute case={result.get('case_id')} url={result.get('url')} evidence={ev}")
+    bundle = build_bundle(deps, args.purchase_id)
+    subject, body = render_email(bundle)
+    if args.dry_run:
+        print(subject); print(); print(body); print(); print(json.dumps(bundle, indent=2, default=str))
+        return 0
+    result = send_dispute(bundle)
+    ev = record_sent(deps, args.purchase_id, bundle["seller"]["contact_email"], result)
+    print(f"sent dispute id={result.get('id')} to={bundle['seller']['contact_email']} evidence={ev}")
     return 0
 
 
@@ -6179,71 +6398,89 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 6: Run tests, dry-run on a real row, file one live, commit**
+- [ ] **Step 6: Run tests, dry-run on a real row, send one live, commit**
 
 Run: `uv run pytest tests/test_disputes.py tests/test_schema.py -q` → all pass.
 Run: `uv run python scripts/file_dispute.py <purchase_id_of_a_FULFILLMENT_FAILED_row> --dry-run | grep -c '"header": "<redacted>"'` → `1`.
-Live (operator, with the env set): the script prints `filed dispute case=...`; `get_purchase` shows a `dispute` evidence row and `dispute_filed` in `history`.
+Live (operator, env set, `SELLER_CONTACT_EMAIL` = an inbox you control): the script prints `sent dispute id=...`; the email arrives with `billguard-evidence.json`; reply to it; `--check` prints `reply recorded as evidence ...`; `get_purchase` shows two `dispute` evidence rows and `dispute_sent`, `dispute_reply` in `history`.
 
 ```bash
-git add billguard/disputes.py billguard/models.py scripts/file_dispute.py tests/test_disputes.py .env.example
-git commit -m "feat(disputes): operator-run dispute filing with redacted evidence bundle (primitive.dev)"
+git add billguard/disputes.py billguard/models.py billguard/registry.py scripts/file_dispute.py tests/test_disputes.py .env.example
+git commit -m "feat(disputes): operator-run dispute email to the seller via Primitive, evidence attached and redacted"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_disputes.py tests/test_schema.py -q` → Expected: pass
-- Run: `grep -rn 'file_dispute\|build_bundle\|file_with_primitive' billguard/server.py | wc -l | tr -d ' '` → Expected: `0` (no MCP path)
+- Run: `grep -rn 'file_dispute\|build_bundle\|send_dispute' billguard/server.py | wc -l | tr -d ' '` → Expected: `0` (no MCP path)
 - Run: `grep -c '"<redacted>"' billguard/disputes.py` → Expected: `1`
+- Run: `grep -c '/send-mail' billguard/disputes.py` → Expected: `1`
 - Run: `grep -c 'PRIMITIVE_API_KEY=$' .env.example` → Expected: `1` (name only, no value)
 
-**Manual check:** one live case filed from the scenario-C row; the case shows the page-count evidence (expected 20, actual 12) and the Sepolia explorer link.
+**Manual check:** one dispute email sent for the scenario-C row, the seller's reply pulled back with `--check`, both visible in `get_purchase`.
 
-### Task 8.6: A seller on Stripe's x402 machine payments, bought through the same code path `[W-STRETCH]`
+### Task 8.6: A seller on Stripe's x402 offering, sandbox and testnet first, bought through the same code path `[W-STRETCH]`
 
-**Maps to:** PRD goal 2 and design §4 "no seller-side integration", extended to a sponsor's hosted x402 seller (scope addition recorded in Appendix B.17). Does not change M0–M7: an env-gated registry entry and tool, same as the Bazaar seller.
-**Timebox:** 45 min hard. **Cut:** drop entirely; if the Stripe endpoint quotes anything other than `exact` on `eip155:8453` canonical USDC, BillGuard rejects it `PRICE_MISMATCH` by design, and that rejection is itself demo-safe (show it, do not work around it).
-**SDK calls:** buyer side unchanged (`purchase()` → `await client.create_payment_payload`). Seller side: Stripe's machine-payments x402 integration as their docs describe (a `PaymentIntent` per settlement; preview API version).
+**Maps to:** PRD goal 2 and design §4 "no seller-side integration", extended to a sponsor's hosted x402 seller (scope addition, Appendix B.17). Does not change M0–M7: an env-gated registry entry and tool, same shape as the Bazaar seller.
+**Timebox:** 45 min hard. **Cut:** drop entirely. The standard Sepolia seller (M1) remains the reliable demo; neither a production preview nor a funded mainnet wallet is a requirement for this task.
+**SDK calls:** buyer side unchanged (`purchase()` → `await client.create_payment_payload`). Seller side: Stripe's x402 integration as its docs describe, using your existing **Stripe sandbox**.
 **§7 tests covered:** the schema test with a sixth env-gated tool present.
 
-**Facts to verify in Stripe's docs before starting (recorded on 2026-10-17 from public sources; confirm against Stripe's own pages):** Stripe's machine payments preview charges agents in USDC on Base using x402 and settles into the merchant's Stripe balance; it uses a preview API version; mainnet x402 there depends on Coinbase CDP facilitator keys; New York is excluded in the US, and non-US merchants must request access. If any of these block your account, take the cut.
-
 **Files:**
-- Create: `sellers_stripe/README.md` (how the endpoint was created, its URL, the price), `tests/test_stripe_seller_tool.py`
-- Modify: `billguard/registry.py` (second env-gated block, `STRIPE_SELLER_*`), `billguard/server.py` (second env-gated tool block), `.env.example`
+- Create: `sellers_stripe/README.md`, `tests/test_stripe_seller_tool.py`
+- Modify: `billguard/registry.py` (env-gated block, `STRIPE_SELLER_*` incl. `STRIPE_SELLER_NETWORK`), `billguard/server.py` (env-gated tool block), `policy.yaml` (`stripe_seller`), `.env.example`
 
-**Implementer brief:** Stand up one paid endpoint on Stripe's x402 offering (follow their x402 guide; a $0.01 USDC sample route is enough), then buy from it through BillGuard exactly like the Bazaar seller: quote → mandate → sign → send → verify, with the `non_empty` validator. The seller is a stranger to BillGuard; nothing in BillGuard changes except the env-gated registry entry and tool. Probe the endpoint with the bare SDK client first (same snippet as `bazaar_probe.py --smoke`) and record the 402's `accepts`: scheme, network, asset, `extra.assetTransferMethod`. If it is Permit2 or a non-USDC asset, stop and take the cut.
+**Implementer brief:** Use the Stripe sandbox you already have. Step 1 is to read Stripe's x402 docs and find the documented sandbox or test-mode path: which network a sandbox endpoint quotes (a testnet such as Base Sepolia, or mainnet) and which API version it needs. Prefer the testnet path; BillGuard's Sepolia buyer wallet and the M1 faucet USDC then cover it with no new funding. Only if the sandbox can quote nothing but mainnet, and the mainnet wallet is already funded from M7, run it on mainnet; otherwise take the cut. Probe the endpoint with the bare SDK client first and record the 402's `accepts` (scheme, network, asset, `extra.assetTransferMethod`). The registry entry pins the network the endpoint quotes (`STRIPE_SELLER_NETWORK`) and the canonical USDC for that network; if the quote is Permit2, a non-USDC asset, or a non-`exact` scheme, BillGuard rejects it `PRICE_MISMATCH` before signing and that rejection is shown instead. Nothing else in BillGuard changes.
 
-- [ ] **Step 1: Create the Stripe x402 endpoint per Stripe's guide; record it**
+- [ ] **Step 1: Read Stripe's x402 docs in your sandbox; record the sandbox path**
 
-`sellers_stripe/README.md` with headings `## Endpoint URL`, `## Price (minor units)`, `## accepts from the unpaid 402` (paste), `## Stripe API version used`, `## Caveats` (region, preview).
+`sellers_stripe/README.md` with headings `## Sandbox path (from docs, <date>)` (test mode? which network? API version?), `## Endpoint URL`, `## Price (minor units)`, `## accepts from the unpaid 402` (paste), `## Caveats`. If no sandbox/testnet path exists and mainnet is not already funded: write `## Decision: cut` and stop.
 
-- [ ] **Step 2: Add the env-gated registry entry (after the Bazaar block in `load_registry`)**
+- [ ] **Step 2: Create the endpoint in the sandbox per the docs; probe it with the bare SDK**
+
+Run (adapt key env to the network): `uv run python -c "
+import asyncio, os; from dotenv import load_dotenv; load_dotenv('.env')
+from eth_account import Account; from x402.client import x402Client; from x402.http.clients.httpx import x402HttpxClient
+from x402.mechanisms.evm.exact import ExactEvmScheme; from x402.mechanisms.evm.signers import EthAccountSigner
+import httpx
+async def main():
+    url = os.environ['STRIPE_SELLER_URL']
+    r = httpx.get(url); print('unpaid', r.status_code, r.headers.get('PAYMENT-REQUIRED','')[:120])
+    key = os.environ['BUYER_KEY_SEPOLIA' if os.environ.get('STRIPE_SELLER_NETWORK','eip155:84532')=='eip155:84532' else 'BUYER_KEY_MAINNET']
+    c = x402Client(); c.register('eip155:*', ExactEvmScheme(EthAccountSigner(Account.from_key(key)))); c.set_spend_controls({'max_amount_per_payment': False})
+    async with x402HttpxClient(c, timeout=60) as http:
+        p = await http.get(url); print('paid', p.status_code, p.headers.get('content-type'), 'settle', 'PAYMENT-RESPONSE' in p.headers)
+asyncio.run(main())"`
+Expected: `unpaid 402 ...` then `paid 200 ... settle True`. Paste the decoded `accepts` into the README.
+
+- [ ] **Step 3: Add the env-gated registry entry (after the Bazaar block in `load_registry`)**
 
 ```python
     stripe_url = os.environ.get("STRIPE_SELLER_URL")
     if stripe_url:
+        net = os.environ.get("STRIPE_SELLER_NETWORK", SEPOLIA)  # sandbox/testnet first; mainnet only if the sandbox quotes it
         services.append(Service(
-            "stripe_seller", os.environ.get("STRIPE_SELLER_TOOL_NAME", "get_stripe_seller_data"), "GET", stripe_url, MAINNET,
-            USDC[MAINNET], int(os.environ["STRIPE_SELLER_PRICE_MINOR"]),
+            "stripe_seller", os.environ.get("STRIPE_SELLER_TOOL_NAME", "get_stripe_seller_data"), "GET", stripe_url, net,
+            USDC[net], int(os.environ["STRIPE_SELLER_PRICE_MINOR"]),
             os.environ.get("STRIPE_SELLER_CONTENT_TYPE", "application/json"), ("non_empty", "content_hash"), 40.0,
         ))
 ```
-Add `stripe_seller` to `allowed_services` in `policy.yaml` and the four `STRIPE_SELLER_*` names (empty) to `.env.example`.
+Add `stripe_seller` to `allowed_services` in `policy.yaml` and the `STRIPE_SELLER_URL=`, `STRIPE_SELLER_NETWORK=eip155:84532`, `STRIPE_SELLER_PRICE_MINOR=`, `STRIPE_SELLER_CONTENT_TYPE=application/json`, `STRIPE_SELLER_TOOL_NAME=get_stripe_seller_data` names to `.env.example`.
 
-- [ ] **Step 3: Add the env-gated tool (after the Bazaar tool block in `server.py`)**
+- [ ] **Step 4: Add the env-gated tool (after the Bazaar tool block in `server.py`)**
 
 ```python
 if os.environ.get("STRIPE_SELLER_URL"):
     _stripe_tool_name = os.environ.get("STRIPE_SELLER_TOOL_NAME", "get_stripe_seller_data")
 
     @mcp.tool(name=_stripe_tool_name,
-              description=f"Buy from a seller hosted on Stripe's x402 machine payments ({os.environ['STRIPE_SELLER_URL']}); "
-                          f"price {int(os.environ['STRIPE_SELLER_PRICE_MINOR']) / 1_000_000:.4f} USDC on Base mainnet. {REUSE}")
+              description=f"Buy from a seller hosted on Stripe's x402 integration ({os.environ['STRIPE_SELLER_URL']}); "
+                          f"price {int(os.environ['STRIPE_SELLER_PRICE_MINOR']) / 1_000_000:.4f} USDC on "
+                          f"{os.environ.get('STRIPE_SELLER_NETWORK', 'eip155:84532')}. {REUSE}")
     async def get_stripe_seller_data(purchase_intent_id: str, task_id: str | None = None) -> dict[str, Any]:
         return await purchase(get_deps(), "stripe_seller", {}, purchase_intent_id, task_id)
 ```
 
-- [ ] **Step 4: Write `tests/test_stripe_seller_tool.py`**
+- [ ] **Step 5: Write `tests/test_stripe_seller_tool.py`**
 
 ```python
 import importlib
@@ -6262,21 +6499,22 @@ async def test_stripe_seller_tool_registered_without_force_param():
     assert name in tools and set(tools[name].parameters["properties"]) == {"purchase_intent_id", "task_id"}
 ```
 
-- [ ] **Step 5: Buy once through Claude Desktop, then commit**
+- [ ] **Step 6: Buy once through Claude Desktop, then commit**
 
-Prompt: *"Buy from the Stripe-hosted seller, purchase intent id demo-stripe-1."* Expected: `SETTLED` + `VERIFIED`, `network: eip155:8453`, the Stripe dashboard shows a PaymentIntent for the same amount, basescan shows the USDC transfer. If the quote is rejected `PRICE_MISMATCH`, record the `accepts` in the README and show the rejection in the demo instead.
+Prompt: *"Buy from the Stripe-hosted seller, purchase intent id demo-stripe-1."* Expected: `SETTLED` + `VERIFIED` on the sandbox's network, the Stripe sandbox dashboard shows the corresponding payment record, the explorer shows the USDC transfer. If the quote is rejected `PRICE_MISMATCH`, record the `accepts` in the README and show the rejection in the demo instead.
 
 ```bash
 git add sellers_stripe/README.md billguard/registry.py billguard/server.py policy.yaml .env.example tests/test_stripe_seller_tool.py
-git commit -m "feat(sellers): env-gated Stripe x402 seller bought through the same code path"
+git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet first) bought through the same code path"
 ```
 
 **Exit criteria (auto):**
 - Run: `STRIPE_SELLER_URL=https://example.invalid/x STRIPE_SELLER_PRICE_MINOR=10000 uv run pytest tests/test_stripe_seller_tool.py tests/test_schema.py -q` → Expected: pass
 - Run: `uv run pytest -q` → Expected: all pass (Stripe test skipped when env unset)
-- Run: `grep -c '^## accepts from the unpaid 402' sellers_stripe/README.md` → Expected: `1`
+- Run: `grep -c '^## Sandbox path' sellers_stripe/README.md` → Expected: `1`
+- Run: `grep -c 'STRIPE_SELLER_NETWORK' billguard/registry.py` → Expected: `1`
 
-**Manual mainnet check:** one settled purchase, or a recorded `PRICE_MISMATCH` rejection with the seller's `accepts` pasted in the README.
+**Manual check:** one settled sandbox purchase, or a recorded `PRICE_MISMATCH` rejection with the seller's `accepts` pasted in the README, or `## Decision: cut` with the reason.
 
 ### Milestone M8 — Checkpoint and manual verification
 
@@ -6286,8 +6524,8 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller bought through the sa
 - [ ] If 8.2 ran: the two-transfer screenshot is referenced in the checklist.
 - [ ] If 8.3 ran: the ledger URL is in the checklist and the table updates during a purchase.
 - [ ] If 8.4 shipped: a Claude Desktop install from the Manufact listing lists the same tools; no key value appears in the listing.
-- [ ] If 8.5 shipped: one dispute case exists with redacted evidence; `grep -rn file_dispute billguard/server.py` is empty.
-- [ ] If 8.6 shipped: one settled Stripe-seller purchase (or its recorded `PRICE_MISMATCH`); the schema test is green with the extra tool.
+- [ ] If 8.5 shipped: one dispute email sent with the redacted evidence attached and the reply pulled back; `grep -rn file_dispute billguard/server.py` is empty.
+- [ ] If 8.6 shipped: one settled Stripe-sandbox purchase (or its recorded `PRICE_MISMATCH`, or a documented cut); the schema test is green with the extra tool.
 - [ ] `uv run python scripts/reset_demo.py --yes`.
 
 ---
@@ -6331,7 +6569,7 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller bought through the sa
 2. `smoke_sellers.py` on screen; `grep -rn billguard sellers/` is empty. Optional: `--naive-retry` screenshot (two transfers).
 3. Claude Desktop, spec §8 prompt, budget $5.
 4. Report → VERIFIED; click the Sepolia explorer link.
-5. Research → SETTLEMENT_UNKNOWN → chain_check(true) → SETTLED, PAID_NO_DELIVERY, all in one call; show `history`.
+5. Research → SETTLEMENT_UNKNOWN → chain_check(AuthorizationUsed + Transfer, tx) → SETTLED, PAID_NO_DELIVERY, all in one call; show `history` and click the tx link.
    Presenter: "Try that research purchase again." → DUPLICATE_SUSPECTED (same intent) or SERVICE_QUARANTINED (reworded). One transfer.
 6. Convert → 12 of 20 pages → FULFILLMENT_FAILED with page-count evidence. "Claude has no tool to pay again."
 7. `list_findings` → Claude summarizes spent / delivered / unresolved.
@@ -6438,7 +6676,8 @@ git commit -m "docs(demo): fallback drills for design §10 risks"
 13. **`QUOTE_FAILED` reject reason.** A transport error on the unpaid request is not proof that a route is unprotected, so it is rejected without a proven `NOT_X402` finding. Nothing is signed either way.
 14. **45 s budget.** Quote and send timeouts are clipped to the remaining call budget, and each chain read is wrapped in `asyncio.wait_for` against it. The reconcile resend uses an 8 s cap (S4). No pytest covers wall-clock time; Task 5.3's live timing (scenario B under 45 s) is the check.
 15. **Manufact listing (Task 8.4) is a scope addition** the user asked for after the design was approved. It publishes the unchanged stdio server; env variables are listed by name only.
-16. **primitive.dev dispute filing (Task 8.5) is a scope addition.** The PRD lists disputes with the seller as a non-goal, so this is kept operator-only (a script, never an MCP tool), moves no money, and always redacts the signed authorization. It is the human side of the existing `report_to_seller` action.
-17. **Stripe x402 seller (Task 8.6) is a scope addition.** Stripe's machine-payments offering is seller-side (merchants accept USDC on Base via x402, settled to a Stripe balance), so it enters BillGuard as one more stranger seller bought through the unchanged code path, env-gated like the Bazaar seller. BillGuard itself never needs a Stripe account to pay: the buyer signs an EIP-3009 USDC authorization and the seller's facilitator settles it.
+16. **Dispute email via Primitive (Task 8.5) is a scope addition.** Primitive is email infrastructure for agents (`POST /send-mail`, replies, threads, webhooks), not an arbitration service, so the task sends the seller a documented complaint with the redacted evidence attached and records the thread; BillGuard arbitrates nothing (PRD non-goal respected). Operator-only script, never an MCP tool, moves no money. It is the human side of the existing `report_to_seller` action.
+17. **Stripe x402 seller (Task 8.6) is a scope addition, sandbox and testnet first.** Stripe's offering is seller-side, so it enters BillGuard as one more stranger seller bought through the unchanged code path, env-gated like the Bazaar seller and pinned to whatever network the sandbox endpoint quotes (`STRIPE_SELLER_NETWORK`, default Base Sepolia). A production preview or a funded mainnet wallet is never a requirement; the standard Sepolia seller is the fallback. BillGuard itself never needs a Stripe account to pay.
 18. **Facilitator accounts.** The x402.org facilitator is testnet-only, which is exactly where BillGuard's own sellers run; for every mainnet seller (Bazaar, Stripe) the seller's facilitator settles, so BillGuard as a buyer needs no facilitator account on any network.
 19. **Per-call statistics (Task 2.9) are a scope addition.** Every response gains `transactions`, `delivery` and `budget`, and a read-only `list_purchases` tool exists. The delivery level is derived only from the checks that ran (`verified`, `partial`, `unverified`, `none`); BillGuard never emits a probability, consistent with "schema-valid is not fact-checked".
+20. **Settlement proof is event-based, not `authorizationState` alone (Task 5.2; from external review).** Under EIP-3009 a nonce is consumed by `transferWithAuthorization` or by `cancelAuthorization`, so `authorizationState == true` proves only that the authorization can never be reused. BillGuard marks a purchase `SETTLED` only when the USDC `AuthorizationUsed(from, nonce)` event is found and its transaction holds a `Transfer(from → payTo, amount)` log; a `canceled` event is a proven `PAYMENT_FAILED`; a consumed nonce without proof stays `SETTLEMENT_UNKNOWN` with no resend and a human-review finding, and the guard keeps blocking retries. This re-adds the Transfer-log lookup the design had cut (§5), because the proof is cheap (events are indexed by authorizer and nonce) and it also yields the transaction hash for the demo. Public RPCs cap `eth_getLogs` ranges (HTTP 413 at 2000 blocks on Base Sepolia), so the search runs in 100-block windows from the purchase's start block.
