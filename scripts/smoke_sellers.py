@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import os
 import sys
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from eth_account import Account
+from pypdf import PdfReader
 from x402.client import x402Client
 from x402.http.clients.httpx import PaymentError, x402HttpxClient
 from x402.mechanisms.evm.exact import ExactEvmScheme
@@ -52,6 +54,7 @@ async def main(naive_retry: bool) -> int:
         r = await buy(http, "POST", f"{BASE}/convert", json={"doc_id": "d1", "pages": 20})
         assert r.status_code == 200, f"/convert failed: {r.status_code} {r.text[:200]}"
         assert r.headers["content-type"].startswith("application/pdf")
+        assert len(PdfReader(io.BytesIO(r.content)).pages) > 0, "/convert returned a PDF with no pages"
         assert "PAYMENT-RESPONSE" in r.headers, "/convert settled without PAYMENT-RESPONSE"
 
         if naive_retry:
@@ -60,6 +63,7 @@ async def main(naive_retry: bool) -> int:
                 try:
                     r = await buy(http, "GET", f"{BASE}/research-slow", params={"topic": "naive"})
                     print(f"attempt {attempt}: {r.status_code}")
+                    assert r.status_code == 200, f"/research-slow failed: {r.status_code} {r.text[:200]}"
                 except PaymentError as e:
                     print(f"attempt {attempt}: PaymentError after paying: {e}")
     print("SMOKE OK")
