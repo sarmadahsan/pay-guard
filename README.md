@@ -33,4 +33,4 @@ No escrow, no refunds, no fact-checking of purchased content, no universal MCP p
     uv run python -m payguard.server               # MCP server over stdio (Claude Desktop launches this)
     uv run pytest -q
 
-Plan: docs/billguard/design/2026-10-17-billguard-implementation-plan.md
+Plan: docs/pay-guard/design/2026-10-17-pay-guard-implementation-plan.md
