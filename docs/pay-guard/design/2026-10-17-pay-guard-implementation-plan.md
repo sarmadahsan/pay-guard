@@ -1,14 +1,14 @@
-# BillGuard Implementation Plan
+# PayGuard (pay-guard) Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use engineering:subagent-driven-development (recommended) or engineering:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship the BillGuard overnight-hackathon MVP: an MCP server that buys from ordinary x402 v2 sellers, enforces a spending mandate before signing, reconciles ambiguous settlements on-chain, verifies deliveries, and never lets the agent pay twice without a human.
+**Goal:** Ship the PayGuard overnight-hackathon MVP: an MCP server that buys from ordinary x402 v2 sellers, enforces a spending mandate before signing, reconciles ambiguous settlements on-chain, verifies deliveries, and never lets the agent pay twice without a human.
 
-**Architecture:** One `uv` monorepo with three processes: the FastMCP stdio server (`billguard/`), the FastAPI demo sellers using only the official x402 middleware (`sellers/`), and Claude Desktop. The purchase flow is an explicit state machine persisted by compare-and-set before every network call, behind a `Repository` protocol with SQLite (default) and Supabase backends. Reconciliation reads EIP-3009 `authorizationState` on the USDC contract with web3.py.
+**Architecture:** One `uv` monorepo with three processes: the FastMCP stdio server (`payguard/`), the FastAPI demo sellers using only the official x402 middleware (`sellers/`), and Claude Desktop. The purchase flow is an explicit state machine persisted by compare-and-set before every network call, behind a `Repository` protocol with SQLite (default) and Supabase backends. Reconciliation reads EIP-3009 `authorizationState` on the USDC contract with web3.py.
 
 **Tech Stack:** Python 3.12, uv, `x402==2.25.0` (v2 protocol, `[fastapi,extensions]` extras), `fastmcp` 2.x, FastAPI + uvicorn, httpx, web3.py, eth-account, pypdf, PyYAML, python-dotenv, supabase-py, pytest + pytest-asyncio.
 
-**Authority:** `docs/billguard/design/design-final.md` (sections 3, 5, 6, 8 govern behavior and sequencing), `docs/billguard/prd/prd.md` (F1–F13, metrics 1–8), `docs/billguard/design/design-review-3.md` (build-time gotchas S1–S10). This plan does not redesign anything. Where the design leaves an implementation detail open, the choice is marked **Plan decision** and stays inside the design's constraints.
+**Authority:** `docs/pay-guard/design/design-final.md` (sections 3, 5, 6, 8 govern behavior and sequencing), `docs/pay-guard/prd/prd.md` (F1–F13, metrics 1–8), `docs/pay-guard/design/design-review-3.md` (build-time gotchas S1–S10). This plan does not redesign anything. Where the design leaves an implementation detail open, the choice is marked **Plan decision** and stays inside the design's constraints.
 
 ---
 
@@ -44,20 +44,20 @@
 | Path | Created in | Owned by (may modify after creation) |
 |---|---|---|
 | `pyproject.toml`, `.python-version`, `.env.example`, `policy.yaml`, `README.md` (run section) | M0 | `[W-ENV]`, then M7 appends Bazaar env |
-| `billguard/__init__.py`, `billguard/logging_setup.py` | M0 | `[W-ENV]` |
-| `billguard/models.py` | M2 | `[W-CORE]` only |
-| `billguard/store/__init__.py`, `store/base.py`, `store/sqlite.py` | M2 | `[W-CORE]`; M6 edits `store/__init__.py` only to add the Supabase branch |
-| `billguard/store/supabase.py` | M6 | `[W-SUPABASE]` |
-| `billguard/registry.py` | M2 | `[W-CORE]`; M7 edits only the Bazaar entry block |
-| `billguard/policy.py`, `billguard/wallet.py` | M2 | `[W-CORE]` |
-| `billguard/artifacts.py` | M2 (JSON + bytes) | `[W-VERIFY]` (adds PDF page count) |
-| `billguard/verify.py` | M2 (4 basic validators) | `[W-VERIFY]` (adds `pdf_page_count`, `content_hash`) |
-| `billguard/guard.py` | M2 (stub) | `[W-MANDATE]` |
-| `billguard/recovery.py` | M2 (stub) | `[W-MANDATE]` |
-| `billguard/reconcile.py` | M2 (stub) | `[W-RECONCILE]` |
-| `billguard/chain.py` | M5 | `[W-RECONCILE]` |
-| `billguard/outcome.py`, `billguard/response.py`, `billguard/purchase.py`, `billguard/deps.py` | M2 | `[W-CORE]` only (M3–M5 never edit these; Task 2.9 edits `response.py` and may run alongside M3–M5) |
-| `billguard/server.py` | M2 | `[W-CORE]`; M7 adds the Bazaar tool block only |
+| `payguard/__init__.py`, `payguard/logging_setup.py` (renamed from `billguard/` by Task 0.2) | M0 | `[W-ENV]` |
+| `payguard/models.py` | M2 | `[W-CORE]` only |
+| `payguard/store/__init__.py`, `store/base.py`, `store/sqlite.py` | M2 | `[W-CORE]`; M6 edits `store/__init__.py` only to add the Supabase branch |
+| `payguard/store/supabase.py` | M6 | `[W-SUPABASE]` |
+| `payguard/registry.py` | M2 | `[W-CORE]`; M7 edits only the Bazaar entry block |
+| `payguard/policy.py`, `payguard/wallet.py` | M2 | `[W-CORE]` |
+| `payguard/artifacts.py` | M2 (JSON + bytes) | `[W-VERIFY]` (adds PDF page count) |
+| `payguard/verify.py` | M2 (4 basic validators) | `[W-VERIFY]` (adds `pdf_page_count`, `content_hash`) |
+| `payguard/guard.py` | M2 (stub) | `[W-MANDATE]` |
+| `payguard/recovery.py` | M2 (stub) | `[W-MANDATE]` |
+| `payguard/reconcile.py` | M2 (stub) | `[W-RECONCILE]` |
+| `payguard/chain.py` | M5 | `[W-RECONCILE]` |
+| `payguard/outcome.py`, `payguard/response.py`, `payguard/purchase.py`, `payguard/deps.py` | M2 | `[W-CORE]` only (M3–M5 never edit these; Task 2.9 edits `response.py` and may run alongside M3–M5) |
+| `payguard/server.py` | M2 | `[W-CORE]`; M7 adds the Bazaar tool block only |
 | `sellers/app.py` | M1 (routes, no stall) | `[W-SELLERS]`, then `[W-RECONCILE]` adds the stall hook in M5 |
 | `sellers/local_facilitator.py` | M1 | `[W-SELLERS]` |
 | `sellers/stall.py` | M5 | `[W-RECONCILE]` |
@@ -72,17 +72,17 @@
 | `tests/test_reconcile.py`, `tests/test_seller_hook.py`, `tests/test_scenario_b.py` | M5 | `[W-RECONCILE]` (5.4 runs only after M3 merged) |
 | `tests/test_store_supabase.py`, `supabase/schema.sql` | M6 | `[W-SUPABASE]` |
 | `tests/test_bazaar_tool.py` | M7 | `[W-MAINNET]` |
-| `docs/billguard/demo/` (checklist, fallback slide, video path) | M9 | `[W-DEMO]` |
+| `docs/pay-guard/demo/` (checklist, fallback slide, video path) | M9 | `[W-DEMO]` |
 
 ### 0.4 Standing instructions for every implementer (paste with every task)
 
 ```
-You are implementing one task of the BillGuard hackathon plan. Read the task text in full before acting.
+You are implementing one task of the PayGuard hackathon plan. Read the task text in full before acting.
 
 Hard rules (violations fail review):
 1. Never commit secrets. Private keys come from environment variables (loaded from a gitignored `.env`). Never print a private key. Never write a private key into evidence, logs, tests, or docs.
-2. `sellers/app.py` and `sellers/local_facilitator.py` import NOTHING from `billguard`. `grep -n billguard sellers/` must return nothing.
-3. In `billguard/` never write to stdout. stdout carries MCP JSON-RPC. Use `logging` (configured to stderr by `billguard/logging_setup.py`). Scripts under `scripts/` may print to stdout.
+2. `sellers/app.py` and `sellers/local_facilitator.py` import NOTHING from `payguard`. `grep -n payguard sellers/` must return nothing.
+3. In `payguard/` never write to stdout. stdout carries MCP JSON-RPC. Use `logging` (configured to stderr by `payguard/logging_setup.py`). Scripts under `scripts/` may print to stdout.
 4. Money is always integer minor units (USDC has 6 decimals). Never use floats for amounts.
 5. Every purchase state transition goes through `Repository.update_status(purchase_id, expected, new, ...)` (compare-and-set). Never write `payment_status` any other way.
 6. No agent-facing tool may take a force/retry parameter, and no MCP tool named `approve_retry` may exist. `safe_next_actions` values are only: get_purchase, reconcile_purchase, wait_until:<ts>, human_review, report_to_seller, use_artifact.
@@ -114,7 +114,7 @@ Environment facts you can rely on:
 - `HTTPRequestContext(adapter, path, method, payment_header=None, route_pattern=None, decoded_path=None)`; it has no `.url`.
 - `x402ResourceServer.initialize()` is synchronous. `x402ResourceServer.on_after_settle(hook)` registers an async hook taking one `SettleResultContext` with `.transport_context.request` being an `HTTPRequestContext`.
 - Canonical USDC: eip155:84532 → 0x036CbD53842c5426634e7929541eC2318f3dCF7e (EIP-712 name "USDC", version "2"); eip155:8453 → 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 (name "USD Coin", version "2").
-- The SDK client's default spend cap is "$1"; BillGuard and the smoke scripts disable it with client.set_spend_controls({"max_amount_per_payment": False}).
+- The SDK client's default spend cap is "$1"; PayGuard and the smoke scripts disable it with client.set_spend_controls({"max_amount_per_payment": False}).
 
 When done, report: Status (DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT), what you implemented, the exact exit-criteria commands you ran and their output, files changed, and any concern.
 ```
@@ -143,7 +143,7 @@ When done, report: Status (DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT),
 ## Milestone M0 — Repo scaffold `[W-ENV]`
 
 **Timebox:** 20 min (21:00–21:20). **Cut if overrun:** none; this is the floor. If `uv sync` fails on a dependency, pin the failing package to the version listed in the task and continue.
-**Checkpoint:** `uv run pytest -q` runs (0 tests) and every third-party import in Task 0.1 step 4 succeeds.
+**Checkpoint:** `uv run pytest -q` runs (0 tests), every third-party import in Task 0.1 step 4 succeeds, and (Task 0.2) the package is `payguard` with no `billguard` left outside `docs/`.
 
 ### Task 0.1: Project skeleton, dependencies, env template, policy `[W-ENV]`
 
@@ -153,7 +153,7 @@ When done, report: Status (DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT),
 **§7 tests covered:** none (scaffold).
 
 **Files:**
-- Create: `pyproject.toml`, `.python-version`, `.env.example`, `policy.yaml`, `billguard/__init__.py`, `billguard/logging_setup.py`, `billguard/store/__init__.py` (empty for now), `sellers/__init__.py`, `scripts/__init__.py`, `tests/__init__.py`, `tests/conftest.py` (minimal), `artifacts/.gitkeep`
+- Create: `pyproject.toml`, `.python-version`, `.env.example`, `policy.yaml`, `payguard/__init__.py`, `payguard/logging_setup.py`, `payguard/store/__init__.py` (empty for now), `sellers/__init__.py`, `scripts/__init__.py`, `tests/__init__.py`, `tests/conftest.py` (minimal), `artifacts/.gitkeep`
 - Modify: `README.md` (append a "Run" section)
 
 **Implementer brief:** You are creating the empty project that every later task builds on. Nothing here talks to a network. Get the dependency set installed with `uv`, prove the imports work, and make the repo safe against secret leaks (`.env` is already gitignored; you add `.env.example` with placeholder values only).
@@ -162,7 +162,7 @@ When done, report: Status (DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT),
 
 ```toml
 [project]
-name = "billguard"
+name = "pay-guard"
 version = "0.1.0"
 description = "Buyer-side purchasing gateway for x402 paid services (hackathon MVP)"
 requires-python = ">=3.12"
@@ -189,7 +189,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["billguard", "sellers", "scripts"]
+packages = ["payguard", "sellers", "scripts"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -223,12 +223,12 @@ SELLER_STALL_S=90
 RPC_URL_SEPOLIA=https://sepolia.base.org
 RPC_URL_MAINNET=https://mainnet.base.org
 
-# BillGuard
-BILLGUARD_STORE=sqlite               # sqlite | supabase
-BILLGUARD_SQLITE_PATH=billguard.db
-BILLGUARD_ARTIFACT_DIR=artifacts
-BILLGUARD_POLICY=policy.yaml
-BILLGUARD_LOG_LEVEL=INFO
+# PayGuard
+PAYGUARD_STORE=sqlite               # sqlite | supabase
+PAYGUARD_SQLITE_PATH=payguard.db
+PAYGUARD_ARTIFACT_DIR=artifacts
+PAYGUARD_POLICY=policy.yaml
+PAYGUARD_LOG_LEVEL=INFO
 
 # Supabase (M6)
 SUPABASE_URL=
@@ -258,9 +258,9 @@ allowed_services:
   - bazaar
 ```
 
-- [ ] **Step 3: Write `billguard/logging_setup.py` and the empty packages**
+- [ ] **Step 3: Write `payguard/logging_setup.py` and the empty packages**
 
-`billguard/logging_setup.py`:
+`payguard/logging_setup.py`:
 ```python
 """Route every log line to stderr. stdout is reserved for MCP JSON-RPC (review S7)."""
 from __future__ import annotations
@@ -276,7 +276,7 @@ def configure_logging() -> None:
     global _CONFIGURED
     if _CONFIGURED:
         return
-    level = os.environ.get("BILLGUARD_LOG_LEVEL", "INFO").upper()
+    level = os.environ.get("PAYGUARD_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         stream=sys.stderr,
         level=level,
@@ -290,7 +290,7 @@ def configure_logging() -> None:
     _CONFIGURED = True
 ```
 
-`billguard/__init__.py`, `billguard/store/__init__.py`, `sellers/__init__.py`, `scripts/__init__.py`, `tests/__init__.py`: empty files.
+`payguard/__init__.py`, `payguard/store/__init__.py`, `sellers/__init__.py`, `scripts/__init__.py`, `tests/__init__.py`: empty files.
 
 `tests/conftest.py` (minimal; Task 2.6 replaces it):
 ```python
@@ -322,23 +322,66 @@ Append to `README.md`:
     uv sync --group dev
     cp .env.example .env            # then fill keys via scripts/setup_wallets.py
     uv run uvicorn sellers.app:app --port 8402      # demo sellers
-    uv run python -m billguard.server               # MCP server over stdio (Claude Desktop launches this)
+    uv run python -m payguard.server               # MCP server over stdio (Claude Desktop launches this)
     uv run pytest -q
 
-Plan: docs/billguard/design/2026-10-17-billguard-implementation-plan.md
+Plan: docs/pay-guard/design/2026-10-17-pay-guard-implementation-plan.md
 ```
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add pyproject.toml uv.lock .python-version .env.example policy.yaml billguard sellers scripts tests artifacts/.gitkeep .gitignore README.md
-git commit -m "chore: scaffold billguard project with pinned x402 2.25.0"
+git add pyproject.toml uv.lock .python-version .env.example policy.yaml payguard sellers scripts tests artifacts/.gitkeep .gitignore README.md
+git commit -m "chore: scaffold payguard project with pinned x402 2.25.0"
 ```
 
 **Exit criteria (auto):**
 - Run: `git ls-files | grep -c '^\.env$'` → Expected: `0`
-- Run: `uv run python -c "from billguard.logging_setup import configure_logging; configure_logging(); import logging; logging.getLogger('t').info('x')" 2>&1 >/dev/null | grep -c ' INFO t: x'` → Expected: `1` (the line went to stderr, not stdout)
+- Run: `uv run python -c "from payguard.logging_setup import configure_logging; configure_logging(); import logging; logging.getLogger('t').info('x')" 2>&1 >/dev/null | grep -c ' INFO t: x'` → Expected: `1` (the line went to stderr, not stdout)
 - Run: `uv run python -c "import x402; print('ok')"` → Expected: `ok`
+
+**Manual Sepolia check:** none.
+
+### Task 0.2: Rename the scaffold from `billguard` to `pay-guard` / `payguard` `[W-ENV]`
+
+**Maps to:** none (naming); must land before any task that imports the package (M2) or reads `PAYGUARD_*` env (M2+). M1 tasks do not depend on it but should run after it so nothing new is created under the old name.
+**Timebox:** 5 min. **Cut:** none.
+**SDK calls:** none. **§7 tests covered:** none.
+
+**Files:**
+- Rename: `billguard/` → `payguard/` (with `logging_setup.py`, `store/__init__.py`)
+- Modify: `pyproject.toml`, `.env.example`, `README.md`, `payguard/logging_setup.py`, `uv.lock` (regenerated)
+
+**Implementer brief:** Task 0.1 was implemented under the old name `billguard`. The project is now called **pay-guard** (distribution name, hyphen) and the Python package is **`payguard`** (no hyphen, because Python imports cannot contain one). Environment variables use the `PAYGUARD_` prefix. Nothing else changes. Do not touch `docs/`: the design documents keep the original product name as history.
+
+- [ ] **Step 1: Rename and rewrite**
+
+```bash
+git mv billguard payguard
+sed -i '' -e 's/^name = "billguard"/name = "pay-guard"/' -e 's/packages = \["billguard"/packages = ["payguard"/' pyproject.toml
+sed -i '' -e 's/BILLGUARD_/PAYGUARD_/g' -e 's/billguard\.db/payguard.db/g' .env.example payguard/logging_setup.py
+sed -i '' -e 's/billguard\.server/payguard.server/g' -e 's#docs/billguard/#docs/pay-guard/#g' -e 's/2026-10-17-billguard-implementation-plan/2026-10-17-pay-guard-implementation-plan/g' -e 's/BillGuard/PayGuard/g' README.md
+uv sync --group dev
+```
+
+- [ ] **Step 2: Verify and commit**
+
+Run: `grep -rniE 'billguard' --exclude-dir=docs --exclude-dir=.venv --exclude-dir=.git . | wc -l | tr -d ' '`
+Expected: `0`
+
+Run: `uv run python -c "from payguard.logging_setup import configure_logging; configure_logging(); print('ok')"`
+Expected: `ok`
+
+```bash
+git add -A
+git commit -m "chore: rename project to pay-guard (package payguard, env PAYGUARD_*)"
+```
+
+**Exit criteria (auto):**
+- Run: `test -d payguard && ! test -d billguard && echo ok` → Expected: `ok`
+- Run: `grep -c '^name = "pay-guard"' pyproject.toml` → Expected: `1`
+- Run: `grep -c 'PAYGUARD_STORE=' .env.example` → Expected: `1`
+- Run: `grep -rniE 'billguard' --exclude-dir=docs --exclude-dir=.venv --exclude-dir=.git . | wc -l | tr -d ' '` → Expected: `0`
 
 **Manual Sepolia check:** none.
 
@@ -530,7 +573,7 @@ git commit -m "feat(scripts): setup_wallets creates keys in .env and prints bala
 
 ### Task 1A.2: Demo sellers with the official middleware + local facilitator `[W-SELLERS]`
 
-**Maps to:** F11 (routes, zero BillGuard imports), non-functional facilitator default and `SELLER_FACILITATOR=local`, metric 1, design §4.
+**Maps to:** F11 (routes, zero PayGuard imports), non-functional facilitator default and `SELLER_FACILITATOR=local`, metric 1, design §4.
 **Timebox:** 25 min (local facilitator part: 20 min max, S10).
 **§7 tests covered:** "Seller-in-process tests are skipped; the hour-1 Sepolia smoke covers them."
 
@@ -539,7 +582,7 @@ git commit -m "feat(scripts): setup_wallets creates keys in .env and prints bala
 
 **SDK calls:** `x402ResourceServer(facilitator_client)`, `server.register("eip155:84532", ExactEvmServerScheme())`, `payment_middleware(routes, server)`, `HTTPFacilitatorClient(FacilitatorConfig(url=...))`, `x402Facilitator()`, `register_exact_evm_facilitator(fac, FacilitatorWeb3Signer(...), networks="eip155:84532")`, `RouteConfig`, `PaymentOption`.
 
-**Implementer brief:** Build the FastAPI seller with four paid routes exactly as design §4 lists them. The stall hook for `/research-slow` is **not** part of this task (M5 adds it); here `/research-slow` returns immediately. The app must import nothing from `billguard`. The facilitator client is chosen by `SELLER_FACILITATOR`: `remote` (default, `FACILITATOR_URL`, default `https://x402.org/facilitator`) or `local` (in-process SDK facilitator signed by `FACILITATOR_KEY_SEPOLIA`). `/convert` always returns a 12-page PDF regardless of the requested page count. Response shapes must match the schemas in the plan (BillGuard validates them in M2): report `{ticker, name, revenue_usd, fiscal_year, summary}`, research `{topic, summary, sources: [str, ...]}`.
+**Implementer brief:** Build the FastAPI seller with four paid routes exactly as design §4 lists them. The stall hook for `/research-slow` is **not** part of this task (M5 adds it); here `/research-slow` returns immediately. The app must import nothing from `payguard`. The facilitator client is chosen by `SELLER_FACILITATOR`: `remote` (default, `FACILITATOR_URL`, default `https://x402.org/facilitator`) or `local` (in-process SDK facilitator signed by `FACILITATOR_KEY_SEPOLIA`). `/convert` always returns a 12-page PDF regardless of the requested page count. Response shapes must match the schemas in the plan (PayGuard validates them in M2): report `{ticker, name, revenue_usd, fiscal_year, summary}`, research `{topic, summary, sources: [str, ...]}`.
 
 - [ ] **Step 1: Write `sellers/local_facilitator.py`**
 
@@ -547,7 +590,7 @@ git commit -m "feat(scripts): setup_wallets creates keys in .env and prints bala
 """In-process SDK facilitator (design §4, Sugg. 3). Used iff SELLER_FACILITATOR=local.
 
 Settles on-chain with FACILITATOR_KEY_SEPOLIA, which must hold a little Base Sepolia ETH.
-The buyer still needs no ETH. Imports nothing from billguard.
+The buyer still needs no ETH. Imports nothing from payguard.
 """
 from __future__ import annotations
 
@@ -573,7 +616,7 @@ def build_local_facilitator() -> x402Facilitator:
 - [ ] **Step 2: Write `sellers/app.py`**
 
 ```python
-"""Demo x402 sellers. Official x402 middleware only. ZERO billguard imports (PRD F11, metric 1).
+"""Demo x402 sellers. Official x402 middleware only. ZERO payguard imports (PRD F11, metric 1).
 
 Routes (design §4):
   GET  /report/{ticker}          $0.50  JSON company record
@@ -635,7 +678,7 @@ ROUTES = {
 }
 
 server = build_server()
-app = FastAPI(title="BillGuard demo sellers")
+app = FastAPI(title="PayGuard demo sellers")
 _middleware = payment_middleware(ROUTES, server)
 
 
@@ -727,7 +770,7 @@ git commit -m "feat(sellers): FastAPI demo sellers on official x402 middleware w
 ```
 
 **Exit criteria (auto):**
-- Run: `grep -rn billguard sellers/ | wc -l | tr -d ' '` → Expected: `0`
+- Run: `grep -rn payguard sellers/ | wc -l | tr -d ' '` → Expected: `0`
 - Run: `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8402/report/ACME` → Expected: `402`
 - Run: `curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -d '{"doc_id":"d1","pages":20}' http://127.0.0.1:8402/convert` → Expected: `402`
 - Run: `curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8402/research-slow?topic=x'` → Expected: `402`
@@ -747,12 +790,12 @@ git commit -m "feat(sellers): FastAPI demo sellers on official x402 middleware w
 
 **SDK calls:** `x402Client()`, `client.register("eip155:*", ExactEvmScheme(EthAccountSigner(account)))`, `client.set_spend_controls({"max_amount_per_payment": False})`, `x402HttpxClient(client, timeout=60)`, catch `PaymentError`.
 
-**Implementer brief:** Write the plain-SDK buyer that proves the sellers are ordinary x402 endpoints. It pays `/report/ACME` and `/convert` with `x402HttpxClient` (no BillGuard code on this path), asserts a 200 with a resource and a `PAYMENT-RESPONSE` header, and prints the wall-clock latency of each paid request (this is the settle latency the review asked for in S2). The explicit `timeout=60` matters: `x402HttpxClient` is a plain `httpx.AsyncClient` and would otherwise time out at httpx's 5 s default while the facilitator is still settling (S6). `--naive-retry` hits `/research-slow` twice, catching `PaymentError` (which wraps the `ReadTimeout` once M5's stall hook exists), to show the bare SDK paying twice.
+**Implementer brief:** Write the plain-SDK buyer that proves the sellers are ordinary x402 endpoints. It pays `/report/ACME` and `/convert` with `x402HttpxClient` (no PayGuard code on this path), asserts a 200 with a resource and a `PAYMENT-RESPONSE` header, and prints the wall-clock latency of each paid request (this is the settle latency the review asked for in S2). The explicit `timeout=60` matters: `x402HttpxClient` is a plain `httpx.AsyncClient` and would otherwise time out at httpx's 5 s default while the facilitator is still settling (S6). `--naive-retry` hits `/research-slow` twice, catching `PaymentError` (which wraps the `ReadTimeout` once M5's stall hook exists), to show the bare SDK paying twice.
 
 - [ ] **Step 1: Write the script**
 
 ```python
-"""Pay each demo seller with the plain x402 SDK client. No BillGuard code on this path (metric 1).
+"""Pay each demo seller with the plain x402 SDK client. No PayGuard code on this path (metric 1).
 
 Usage:
   uv run python scripts/smoke_sellers.py
@@ -842,7 +885,7 @@ git commit -m "feat(scripts): smoke_sellers pays /report and /convert with the b
 - Run: `grep -c 'timeout=60' scripts/smoke_sellers.py` → Expected: `1`
 - Run: `grep -c 'max_amount_per_payment' scripts/smoke_sellers.py` → Expected: `1`
 - Run: `grep -c 'except PaymentError' scripts/smoke_sellers.py` → Expected: `1`
-- Run: `grep -rn 'import billguard\|from billguard' scripts/smoke_sellers.py | wc -l | tr -d ' '` → Expected: `0`
+- Run: `grep -rn 'import payguard\|from payguard' scripts/smoke_sellers.py | wc -l | tr -d ' '` → Expected: `0`
 
 **Manual Sepolia check (this is the M1 checkpoint):** `SMOKE OK` printed; the seller pay_to address shows two incoming USDC transfers (0.50 and 2.00) on https://sepolia.basescan.org/address/<SELLER_PAY_TO>. Record the latencies in the M1 checkpoint note.
 
@@ -1016,7 +1059,7 @@ Operator verification list (tick all):
 - [ ] Explorer: the seller pay_to address shows the 0.50 and 2.00 USDC transfers on Sepolia basescan.
 - [ ] Local facilitator `initialize()` printed `local facilitator initialize ok` (Task 1A.2 step 4), and the facilitator address holds Sepolia ETH.
 - [ ] Track B: `bazaar_probe.py` printed a candidate list; two were smoke-tested; the winner is written down. If the listing failed, the fallback slide is on the M9 list.
-- [ ] `grep -rn billguard sellers/` is empty.
+- [ ] `grep -rn payguard sellers/` is empty.
 - [ ] If the checkpoint is not met by 23:00: set `SELLER_FACILITATOR=local` in `.env`, restart the seller, rerun the smoke. If that also fails, continue to M2 (its pytest suite uses a fake seller) and retry the facilitator every 30 min.
 
 ---
@@ -1024,7 +1067,7 @@ Operator verification list (tick all):
 ## Milestone M2 — Core purchase flow `[W-CORE]`
 
 **Timebox:** 2 h (22:20–00:20; task timeboxes sum to 120 min: 10+20+15+10+10+35+15+5; Task 2.9 is 20 min more and may overlap M3–M5). **Cut if overrun:** nothing inside the flow is cut (design §8 has no step-2 cut); the overrun is absorbed by the 03:00 rule that moves the Supabase flip to stretch. Do not skip the pytest fake-seller suite: it is what makes M3–M5 safe to build in parallel.
-**Checkpoint (§8.2):** Claude Desktop buys `/report` through BillGuard and the response shows `SETTLED` + `VERIFIED` + a Sepolia transaction.
+**Checkpoint (§8.2):** Claude Desktop buys `/report` through PayGuard and the response shows `SETTLED` + `VERIFIED` + a Sepolia transaction.
 
 **Interfaces frozen here for M3–M5** (bodies may be stubs; signatures may not change later):
 - `guard.resolve_intent(deps, service, args, request_fingerprint, purchase_intent_id, after_reconcile=False) -> IntentDecision`
@@ -1035,7 +1078,7 @@ Operator verification list (tick all):
 - `outcome.send_paid_request(http, method, url, body, header, timeout_s) -> Outcome`, `outcome.classify_outcome(repo, row, outcome, from_state, artifact_dir, via) -> Purchase`
 - `purchase.reconcile_and_finish(deps, row, deadline) -> Purchase`, `purchase.run_from_quote(deps, row, service, args, deadline) -> Purchase`
 
-### Task 2.1: `billguard/models.py` — states, transitions, finding codes, row types `[W-CORE]`
+### Task 2.1: `payguard/models.py` — states, transitions, finding codes, row types `[W-CORE]`
 
 **Maps to:** F3 (state machine), F9 (budget states), design §3 state machine, data model, finding codes, `safe_next_actions` vocabulary.
 **Timebox:** 10 min.
@@ -1043,7 +1086,7 @@ Operator verification list (tick all):
 **§7 tests covered:** "one case per transition" (transition table test).
 
 **Files:**
-- Create: `billguard/models.py`
+- Create: `payguard/models.py`
 - Test: `tests/test_models.py`
 
 **Implementer brief:** Encode design §3 as data: the two status enums, the transition table (compare-and-set writes consult it), the budget state set, finding codes, reject reasons, evidence kinds, the `safe_next_actions` vocabulary (which must never contain a pay/retry value), the `Purchase`/`Evidence`/`Finding` row types, and the `request_fingerprint` helper. **Plan decision:** rows carry `args` (JSON) and `reject_reason` columns in addition to design §3's list; `args` is needed to resend the identical request during reconciliation and to re-run steps 2–7 from `approve_retry.py`; `reject_reason` carries codes such as `SIGNING_FAILED` that are not finding codes. `INTENT_RECORDED -> REJECTED` is a legal transition because design §3 rejects `NOT_X402`, unsupported versions and `SERVICE_QUARANTINED` before quoting.
@@ -1052,7 +1095,7 @@ Operator verification list (tick all):
 
 `tests/test_models.py`:
 ```python
-from billguard.models import (
+from payguard.models import (
     BUDGET_STATES,
     IN_FLIGHT,
     SAFE_NEXT_ACTION_PREFIXES,
@@ -1124,9 +1167,9 @@ def test_purchase_new_defaults():
 - [ ] **Step 2: Run the test and see it fail**
 
 Run: `uv run pytest tests/test_models.py -q`
-Expected: `ModuleNotFoundError: No module named 'billguard.models'`
+Expected: `ModuleNotFoundError: No module named 'payguard.models'`
 
-- [ ] **Step 3: Write `billguard/models.py`**
+- [ ] **Step 3: Write `payguard/models.py`**
 
 ```python
 """Core types of the purchase state machine (design §3). Money is always integer minor units."""
@@ -1372,13 +1415,13 @@ Expected: all pass (`... passed`).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add billguard/models.py tests/test_models.py
+git add payguard/models.py tests/test_models.py
 git commit -m "feat(core): purchase state machine types, transitions, finding codes"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_models.py -q` → Expected: `passed`, 0 failed
-- Run: `uv run python -c "from billguard.models import FindingCode; print(sorted(c.value for c in FindingCode))"` → Expected: `['BUDGET_EXCEEDED', 'DUPLICATE_SUSPECTED', 'FULFILLMENT_FAILED', 'FULFILLMENT_UNVERIFIED', 'NOT_X402', 'PAID_NO_DELIVERY', 'PAYMENT_FAILED', 'PRICE_MISMATCH', 'SERVICE_QUARANTINED', 'SETTLEMENT_UNKNOWN']`
+- Run: `uv run python -c "from payguard.models import FindingCode; print(sorted(c.value for c in FindingCode))"` → Expected: `['BUDGET_EXCEEDED', 'DUPLICATE_SUSPECTED', 'FULFILLMENT_FAILED', 'FULFILLMENT_UNVERIFIED', 'NOT_X402', 'PAID_NO_DELIVERY', 'PAYMENT_FAILED', 'PRICE_MISMATCH', 'SERVICE_QUARANTINED', 'SETTLEMENT_UNKNOWN']`
 
 **Manual Sepolia check:** none.
 
@@ -1390,13 +1433,13 @@ git commit -m "feat(core): purchase state machine types, transitions, finding co
 **§7 tests covered:** "compare-and-set loss" (store level); budget sum; reset.
 
 **Files:**
-- Create: `billguard/store/base.py`, `billguard/store/sqlite.py`
-- Modify: `billguard/store/__init__.py`
+- Create: `payguard/store/base.py`, `payguard/store/sqlite.py`
+- Modify: `payguard/store/__init__.py`
 - Test: `tests/test_store_sqlite.py`
 
 **Implementer brief:** Implement the design's `Repository` protocol over SQLite. Every status write is `update_status(purchase_id, expected, new, history_entry=None, **fields)`: one `UPDATE ... WHERE purchase_id=? AND payment_status=?` that returns `True` only when exactly one row changed, appends the history entry in the same statement with SQLite's `json_insert`, and refuses illegal transitions via `models.assert_transition`. Open the DB in WAL mode with `busy_timeout=5000` and `check_same_thread=False` (Claude Desktop can spawn the server twice). JSON columns are TEXT. `reset(principal_id)` deletes that principal's purchases, evidence and findings and returns the counts.
 
-- [ ] **Step 1: Write `billguard/store/base.py`**
+- [ ] **Step 1: Write `payguard/store/base.py`**
 
 ```python
 """Repository protocol (design §2). Two backends: sqlite (default) and supabase (M6)."""
@@ -1404,7 +1447,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from billguard.models import Evidence, Finding, FulfillmentStatus, PaymentStatus, Purchase
+from payguard.models import Evidence, Finding, FulfillmentStatus, PaymentStatus, Purchase
 
 
 class DuplicateKeyError(Exception):
@@ -1448,9 +1491,9 @@ import time
 
 import pytest
 
-from billguard.models import FulfillmentStatus, PaymentStatus, Purchase, history_entry
-from billguard.store.base import DuplicateKeyError
-from billguard.store.sqlite import SqliteRepository
+from payguard.models import FulfillmentStatus, PaymentStatus, Purchase, history_entry
+from payguard.store.base import DuplicateKeyError
+from payguard.store.sqlite import SqliteRepository
 
 
 @pytest.fixture
@@ -1546,9 +1589,9 @@ def test_set_fulfillment(repo):
 - [ ] **Step 3: Run the tests and see them fail**
 
 Run: `uv run pytest tests/test_store_sqlite.py -q`
-Expected: `ModuleNotFoundError: No module named 'billguard.store.sqlite'`
+Expected: `ModuleNotFoundError: No module named 'payguard.store.sqlite'`
 
-- [ ] **Step 4: Write `billguard/store/sqlite.py`**
+- [ ] **Step 4: Write `payguard/store/sqlite.py`**
 
 ```python
 """SQLite repository (build-night default). WAL mode + busy_timeout 5000 ms (review S7)."""
@@ -1559,7 +1602,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from billguard.models import (
+from payguard.models import (
     BUDGET_STATES,
     IN_FLIGHT,
     Evidence,
@@ -1571,7 +1614,7 @@ from billguard.models import (
     new_id,
     now,
 )
-from billguard.store.base import DuplicateKeyError
+from payguard.store.base import DuplicateKeyError
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS purchases (
@@ -1843,34 +1886,34 @@ class SqliteRepository:
         return counts
 ```
 
-- [ ] **Step 5: Write `billguard/store/__init__.py`**
+- [ ] **Step 5: Write `payguard/store/__init__.py`**
 
 ```python
-"""Store selection by BILLGUARD_STORE (PRD F13): sqlite (default) | supabase (M6)."""
+"""Store selection by PAYGUARD_STORE (PRD F13): sqlite (default) | supabase (M6)."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from billguard.store.base import DuplicateKeyError, Repository
+from payguard.store.base import DuplicateKeyError, Repository
 
 __all__ = ["DuplicateKeyError", "Repository", "open_repository"]
 
 
 def open_repository(root: Path | None = None) -> Repository:
-    kind = os.environ.get("BILLGUARD_STORE", "sqlite").lower()
+    kind = os.environ.get("PAYGUARD_STORE", "sqlite").lower()
     if kind == "sqlite":
-        from billguard.store.sqlite import SqliteRepository
+        from payguard.store.sqlite import SqliteRepository
 
-        path = os.environ.get("BILLGUARD_SQLITE_PATH", "billguard.db")
+        path = os.environ.get("PAYGUARD_SQLITE_PATH", "payguard.db")
         if root is not None and not os.path.isabs(path):
             path = str(root / path)
         return SqliteRepository(path)
     if kind == "supabase":
-        from billguard.store.supabase import SupabaseRepository  # M6
+        from payguard.store.supabase import SupabaseRepository  # M6
 
         return SupabaseRepository.from_env()
-    raise ValueError(f"unknown BILLGUARD_STORE={kind!r} (expected sqlite|supabase)")
+    raise ValueError(f"unknown PAYGUARD_STORE={kind!r} (expected sqlite|supabase)")
 ```
 
 - [ ] **Step 6: Run the tests and see them pass**
@@ -1881,14 +1924,14 @@ Expected: all pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add billguard/store tests/test_store_sqlite.py
+git add payguard/store tests/test_store_sqlite.py
 git commit -m "feat(store): Repository protocol and SQLite backend with compare-and-set writes"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_store_sqlite.py -q` → Expected: `passed`, 0 failed
-- Run: `grep -c "AND payment_status = ?" billguard/store/sqlite.py` → Expected: `1` (the compare-and-set predicate)
-- Run: `grep -c "busy_timeout=5000" billguard/store/sqlite.py` → Expected: `1`
+- Run: `grep -c "AND payment_status = ?" payguard/store/sqlite.py` → Expected: `1` (the compare-and-set predicate)
+- Run: `grep -c "busy_timeout=5000" payguard/store/sqlite.py` → Expected: `1`
 
 **Manual Sepolia check:** none.
 
@@ -1899,7 +1942,7 @@ git commit -m "feat(store): Repository protocol and SQLite backend with compare-
 **§7 tests covered:** PRICE_MISMATCH / BUDGET_EXCEEDED rules behind "each step 6 outcome branch" rejections.
 
 **Files:**
-- Create: `billguard/registry.py`, `billguard/policy.py`, `billguard/wallet.py`
+- Create: `payguard/registry.py`, `payguard/policy.py`, `payguard/wallet.py`
 - Test: `tests/test_policy.py`
 
 **SDK calls:** `x402Client()`, `client.register("eip155:*", ExactEvmScheme(EthAccountSigner(account)))`, `client.set_spend_controls({"max_amount_per_payment": False})`, `DEFAULT_ASSETS` for canonical USDC addresses.
@@ -1912,9 +1955,9 @@ git commit -m "feat(store): Repository protocol and SQLite backend with compare-
 ```python
 import pytest
 
-from billguard.models import RejectReason
-from billguard.policy import MandateError, Policy, check_mandate, check_service_allowed, load_policy
-from billguard.registry import SEPOLIA, USDC, load_registry
+from payguard.models import RejectReason
+from payguard.policy import MandateError, Policy, check_mandate, check_service_allowed, load_policy
+from payguard.registry import SEPOLIA, USDC, load_registry
 
 
 @pytest.fixture
@@ -1991,7 +2034,7 @@ def test_load_policy_yaml(tmp_path):
 Run: `uv run pytest tests/test_policy.py -q`
 Expected: `ModuleNotFoundError`
 
-- [ ] **Step 3: Write `billguard/registry.py`**
+- [ ] **Step 3: Write `payguard/registry.py`**
 
 ```python
 """Allowlisted services (design §2). Hand-written; four demo services plus an optional Bazaar seller."""
@@ -2060,7 +2103,7 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
     return {s.id: s for s in services}
 ```
 
-- [ ] **Step 4: Write `billguard/policy.py`**
+- [ ] **Step 4: Write `payguard/policy.py`**
 
 ```python
 """Spending mandate (design §2 policy fields, §3 step 3). Enforced before anything is signed."""
@@ -2072,8 +2115,8 @@ from typing import Any
 
 import yaml
 
-from billguard.models import RejectReason
-from billguard.registry import Service
+from payguard.models import RejectReason
+from payguard.registry import Service
 
 
 @dataclass(frozen=True)
@@ -2128,7 +2171,7 @@ def check_mandate(policy: Policy, service: Service, amount_minor: int, asset: st
                            f"quoted {amount_minor} minor exceeds remaining budget {remaining} minor (spent {spent_minor})")
 ```
 
-- [ ] **Step 5: Write `billguard/wallet.py`**
+- [ ] **Step 5: Write `payguard/wallet.py`**
 
 ```python
 """Buyer signer per network from env (design §2). Private keys never leave this module."""
@@ -2143,7 +2186,7 @@ from x402.client import x402Client
 from x402.mechanisms.evm.exact import ExactEvmScheme
 from x402.mechanisms.evm.signers import EthAccountSigner
 
-from billguard.registry import MAINNET, SEPOLIA
+from payguard.registry import MAINNET, SEPOLIA
 
 _KEY_ENV = {SEPOLIA: "BUYER_KEY_SEPOLIA", MAINNET: "BUYER_KEY_MAINNET"}
 
@@ -2161,7 +2204,7 @@ def buyer_account(network: str) -> LocalAccount:
 def client_for_account(account: LocalAccount) -> x402Client:
     client = x402Client()
     client.register("eip155:*", ExactEvmScheme(EthAccountSigner(account)))
-    client.set_spend_controls({"max_amount_per_payment": False})  # BillGuard owns the mandate (design §2)
+    client.set_spend_controls({"max_amount_per_payment": False})  # PayGuard owns the mandate (design §2)
     return client
 
 
@@ -2182,14 +2225,14 @@ Expected: all pass.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add billguard/registry.py billguard/policy.py billguard/wallet.py tests/test_policy.py
+git add payguard/registry.py payguard/policy.py payguard/wallet.py tests/test_policy.py
 git commit -m "feat(core): service registry with per-service timeouts, mandate checks, wallet client"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_policy.py -q` → Expected: `passed`, 0 failed
-- Run: `uv run python -c "from billguard.registry import load_registry; r=load_registry('http://x'); print(r['research'].timeout_s, r['report'].timeout_s)"` → Expected: `15.0 40.0`
-- Run: `grep -c 'max_amount_per_payment' billguard/wallet.py` → Expected: `1`
+- Run: `uv run python -c "from payguard.registry import load_registry; r=load_registry('http://x'); print(r['research'].timeout_s, r['report'].timeout_s)"` → Expected: `15.0 40.0`
+- Run: `grep -c 'max_amount_per_payment' payguard/wallet.py` → Expected: `1`
 
 **Manual Sepolia check:** none.
 
@@ -2201,7 +2244,7 @@ git commit -m "feat(core): service registry with per-service timeouts, mandate c
 **§7 tests covered:** "each validator" (json_schema, ticker_matches, content_type, non_empty).
 
 **Files:**
-- Create: `billguard/artifacts.py`, `billguard/verify.py`
+- Create: `payguard/artifacts.py`, `payguard/verify.py`
 - Test: `tests/test_verify.py` (basic cases; M4 appends)
 
 **Implementer brief:** `artifacts.py` turns a response body into an `Artifact`: JSON bodies are parsed inline; everything else is written to `<artifact_dir>/<purchase_id>.<ext>` and referenced by path. The PDF page count is a stub returning `None` here; M4 fills it. `verify.py` holds hard-coded validator functions `(service, args, artifact) -> (name, passed, detail)` and a runner that resolves validator names from the registry (`json_schema:<schema_name>` is parameterized). Unknown validator names raise `KeyError` on purpose: the caller maps any exception to `FULFILLMENT_UNVERIFIED`.
@@ -2215,9 +2258,9 @@ from pathlib import Path
 
 import pytest
 
-from billguard.artifacts import Artifact, store_artifact
-from billguard.registry import load_registry
-from billguard.verify import run_validators
+from payguard.artifacts import Artifact, store_artifact
+from payguard.registry import load_registry
+from payguard.verify import run_validators
 
 
 @pytest.fixture
@@ -2277,7 +2320,7 @@ def test_unknown_validator_raises(reg):
 Run: `uv run pytest tests/test_verify.py -q`
 Expected: `ModuleNotFoundError`
 
-- [ ] **Step 3: Write `billguard/artifacts.py`**
+- [ ] **Step 3: Write `payguard/artifacts.py`**
 
 ```python
 """Delivered artifacts (design §6): inline JSON, or a local path for PDFs/bytes. Never base64."""
@@ -2289,7 +2332,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from billguard.models import EvidenceKind
+from payguard.models import EvidenceKind
 
 
 @dataclass
@@ -2349,7 +2392,7 @@ def load_latest(repo: Any, purchase_id: str) -> Artifact | None:
     return Artifact.from_evidence(rows[-1].payload) if rows else None
 ```
 
-- [ ] **Step 4: Write `billguard/verify.py`**
+- [ ] **Step 4: Write `payguard/verify.py`**
 
 ```python
 """Hard-coded validators (design §5). Each returns (name, passed, detail). Exceptions mean UNVERIFIED."""
@@ -2359,8 +2402,8 @@ from typing import Any, Callable
 
 import jsonschema
 
-from billguard.artifacts import Artifact
-from billguard.registry import Service
+from payguard.artifacts import Artifact
+from payguard.registry import Service
 
 ValidatorResult = tuple[str, bool, dict[str, Any]]
 Validator = Callable[[Service, dict[str, Any], Artifact], ValidatorResult]
@@ -2448,13 +2491,13 @@ Expected: all pass.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add billguard/artifacts.py billguard/verify.py tests/test_verify.py
+git add payguard/artifacts.py payguard/verify.py tests/test_verify.py
 git commit -m "feat(core): artifact storage and basic validators"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_verify.py -q` → Expected: `passed`, 0 failed
-- Run: `grep -c base64 billguard/artifacts.py` → Expected: `1` (only the docstring says "never base64")
+- Run: `grep -c base64 payguard/artifacts.py` → Expected: `1` (only the docstring says "never base64")
 
 **Manual Sepolia check:** none.
 
@@ -2466,11 +2509,11 @@ git commit -m "feat(core): artifact storage and basic validators"
 **§7 tests covered:** none directly; fixes the interfaces the M3/M5 tests target.
 
 **Files:**
-- Create: `billguard/guard.py`, `billguard/reconcile.py`, `billguard/recovery.py`, `billguard/response.py`
+- Create: `payguard/guard.py`, `payguard/reconcile.py`, `payguard/recovery.py`, `payguard/response.py`
 
 **Implementer brief:** Create the three modules M3 and M5 will fill, with exactly the signatures below and minimal bodies, plus the response builder that turns a `Purchase` row into the design §6 MCP response. `safe_next_actions` is computed here and must only ever contain vocabulary values.
 
-- [ ] **Step 1: Write `billguard/guard.py` (M2 stub; M3 replaces the body of `resolve_intent`)**
+- [ ] **Step 1: Write `payguard/guard.py` (M2 stub; M3 replaces the body of `resolve_intent`)**
 
 ```python
 """Design §3 step 1: intent lookup, duplicate guard, service quarantine.
@@ -2483,8 +2526,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from billguard.models import Purchase
-from billguard.registry import Service
+from payguard.models import Purchase
+from payguard.registry import Service
 
 
 @dataclass
@@ -2504,7 +2547,7 @@ def resolve_intent(deps: Any, service: Service, args: dict[str, Any], request_fi
     return IntentDecision("proceed", attempt=1)
 ```
 
-- [ ] **Step 2: Write `billguard/reconcile.py` (M2 stub; M5 replaces)**
+- [ ] **Step 2: Write `payguard/reconcile.py` (M2 stub; M5 replaces)**
 
 ```python
 """Design §5 reconciliation for SETTLEMENT_UNKNOWN rows.
@@ -2516,14 +2559,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from billguard.models import Purchase
+from payguard.models import Purchase
 
 
 async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
     return deps.repo.get_purchase(row.purchase_id) or row
 ```
 
-- [ ] **Step 3: Write `billguard/recovery.py` (M2 stub; M3 replaces)**
+- [ ] **Step 3: Write `payguard/recovery.py` (M2 stub; M3 replaces)**
 
 ```python
 """Startup recovery (design §3, PRD F10). Spawned from the FastMCP lifespan after a 2 s sleep.
@@ -2539,7 +2582,7 @@ async def run_startup_recovery(deps: Any) -> None:
     return None
 ```
 
-- [ ] **Step 4: Write `billguard/response.py`**
+- [ ] **Step 4: Write `payguard/response.py`**
 
 ```python
 """MCP response shape (design §6) and safe_next_actions (design §3)."""
@@ -2547,8 +2590,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from billguard import artifacts
-from billguard.models import (
+from payguard import artifacts
+from payguard.models import (
     IN_FLIGHT,
     SAFE_NEXT_ACTION_PREFIXES,
     EvidenceKind,
@@ -2632,16 +2675,16 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
 
 - [ ] **Step 5: Smoke the imports and commit**
 
-Run: `uv run python -c "import billguard.guard, billguard.reconcile, billguard.recovery, billguard.response; print('ok')"`
+Run: `uv run python -c "import payguard.guard, payguard.reconcile, payguard.recovery, payguard.response; print('ok')"`
 Expected: `ok`
 
 ```bash
-git add billguard/guard.py billguard/reconcile.py billguard/recovery.py billguard/response.py
+git add payguard/guard.py payguard/reconcile.py payguard/recovery.py payguard/response.py
 git commit -m "feat(core): frozen interfaces for guard/reconcile/recovery and the MCP response builder"
 ```
 
 **Exit criteria (auto):**
-- Run: `uv run python -c "import inspect, billguard.guard as g, billguard.reconcile as r, billguard.recovery as v; print(list(inspect.signature(g.resolve_intent).parameters), list(inspect.signature(r.reconcile).parameters), list(inspect.signature(v.run_startup_recovery).parameters))"` → Expected: `['deps', 'service', 'args', 'request_fingerprint', 'purchase_intent_id', 'after_reconcile'] ['deps', 'row', 'deadline'] ['deps']`
+- Run: `uv run python -c "import inspect, payguard.guard as g, payguard.reconcile as r, payguard.recovery as v; print(list(inspect.signature(g.resolve_intent).parameters), list(inspect.signature(r.reconcile).parameters), list(inspect.signature(v.run_startup_recovery).parameters))"` → Expected: `['deps', 'service', 'args', 'request_fingerprint', 'purchase_intent_id', 'after_reconcile'] ['deps', 'row', 'deadline'] ['deps']`
 - Run: `uv run pytest -q` → Expected: all pass
 
 **Manual Sepolia check:** none.
@@ -2653,13 +2696,13 @@ git commit -m "feat(core): frozen interfaces for guard/reconcile/recovery and th
 **§7 tests covered:** "one case per transition" (flow level, incl. compare-and-set loss), "each step 6 outcome branch".
 
 **Files:**
-- Create: `billguard/outcome.py`, `billguard/purchase.py`
+- Create: `payguard/outcome.py`, `payguard/purchase.py`
 - Modify: `tests/conftest.py` (replace the placeholder)
 - Test: `tests/test_purchase_flow.py`
 
 **SDK calls:** `detect_payment_required_version(headers, body)`, `decode_payment_required_header(h)`, `PaymentRequired.model_copy(update={"accepts": [selected]})`, `await client.create_payment_payload(pr)`, `payload.accepted`, `payload.payload["authorization"]`, `encode_payment_signature_header(payload)`, `decode_payment_response_header(h)`, header constants `PAYMENT_REQUIRED_HEADER`, `PAYMENT_SIGNATURE_HEADER`, `PAYMENT_RESPONSE_HEADER`. Tests build a fake v2 seller with `encode_payment_required_header`, `encode_payment_response_header`, `PaymentRequired`, `PaymentRequirements`, `ResourceInfo`, `SettleResponse`.
 
-**Implementer brief:** This is the heart of BillGuard. Implement design §3 steps 2–7 in `run_from_quote` and step 1's orchestration in `purchase` (the decision itself lives in `guard.resolve_intent`, stubbed now). Rules that reviewers will check line by line: every state write is a compare-and-set through `update_status` and happens **before** the next network call; the signed `PAYMENT-SIGNATURE` header is stored as `payment_payload` evidence and the row is `PAYLOAD_SIGNED` then `SENT` before the paid request leaves; the process-wide `asyncio.Lock` covers lookup + row creation and, separately, the budget read + `AUTHORIZED` write, and is **never held during network I/O**; `create_payment_payload` is awaited with `accepts` narrowed to the selected option and the result is asserted to match; only a 2xx with a decodable `PAYMENT-RESPONSE` of `success=true` becomes `SETTLED`, every other post-send outcome becomes `SETTLEMENT_UNKNOWN` and is handed to `reconcile_and_finish` in the same call; a settled row with no artifact gets `PAID_NO_DELIVERY`; validator failures create one `FULFILLMENT_FAILED` finding each; a validator exception yields `FULFILLMENT_UNVERIFIED`. `outcome.py` is shared with M5's reconcile resend, so keep `classify_outcome` free of any reconcile logic.
+**Implementer brief:** This is the heart of PayGuard. Implement design §3 steps 2–7 in `run_from_quote` and step 1's orchestration in `purchase` (the decision itself lives in `guard.resolve_intent`, stubbed now). Rules that reviewers will check line by line: every state write is a compare-and-set through `update_status` and happens **before** the next network call; the signed `PAYMENT-SIGNATURE` header is stored as `payment_payload` evidence and the row is `PAYLOAD_SIGNED` then `SENT` before the paid request leaves; the process-wide `asyncio.Lock` covers lookup + row creation and, separately, the budget read + `AUTHORIZED` write, and is **never held during network I/O**; `create_payment_payload` is awaited with `accepts` narrowed to the selected option and the result is asserted to match; only a 2xx with a decodable `PAYMENT-RESPONSE` of `success=true` becomes `SETTLED`, every other post-send outcome becomes `SETTLEMENT_UNKNOWN` and is handed to `reconcile_and_finish` in the same call; a settled row with no artifact gets `PAID_NO_DELIVERY`; validator failures create one `FULFILLMENT_FAILED` finding each; a validator exception yields `FULFILLMENT_UNVERIFIED`. `outcome.py` is shared with M5's reconcile resend, so keep `classify_outcome` free of any reconcile logic.
 
 - [ ] **Step 1: Replace `tests/conftest.py` with the fake seller and fixtures**
 
@@ -2681,11 +2724,11 @@ from x402.http.utils import encode_payment_required_header, encode_payment_respo
 from x402.schemas import PaymentRequired, PaymentRequirements, SettleResponse
 from x402.schemas.payments import ResourceInfo
 
-from billguard.policy import Policy
-from billguard.purchase import Deps
-from billguard.registry import SEPOLIA, USDC, load_registry
-from billguard.store.sqlite import SqliteRepository
-from billguard.wallet import client_for_account
+from payguard.policy import Policy
+from payguard.purchase import Deps
+from payguard.registry import SEPOLIA, USDC, load_registry
+from payguard.store.sqlite import SqliteRepository
+from payguard.wallet import client_for_account
 
 PAY_TO = "0x000000000000000000000000000000000000dEaD"
 PRICES = {"/report/": 500_000, "/report-premium/": 750_000, "/research-slow": 750_000, "/convert": 2_000_000}
@@ -2788,7 +2831,7 @@ async def no_sleep(_s: float) -> None:
 
 async def never_used(_network: str, _from_addr: str, _nonce: str, _pay_to: str, _value_minor: int, _since_ts: float):
     """Hermetic default chain reader: authorization never seen on-chain, block time 0 (so never 'expired').
-    Duck-typed like billguard.chain.ChainState (M5) so this file needs no import that does not exist yet."""
+    Duck-typed like payguard.chain.ChainState (M5) so this file needs no import that does not exist yet."""
     return SimpleNamespace(used=False, block_number=0, block_timestamp=0, event=None, tx_hash=None, transfer_ok=None)
 
 
@@ -2840,8 +2883,8 @@ from dataclasses import replace
 
 import pytest
 
-from billguard.models import PaymentStatus, fingerprint
-from billguard.purchase import purchase
+from payguard.models import PaymentStatus, fingerprint
+from payguard.purchase import purchase
 from tests.conftest import FakeSeller
 
 
@@ -2997,9 +3040,9 @@ async def test_unknown_service(deps):
 - [ ] **Step 3: Run the tests and see them fail**
 
 Run: `uv run pytest tests/test_purchase_flow.py -q`
-Expected: `ModuleNotFoundError: No module named 'billguard.purchase'`
+Expected: `ModuleNotFoundError: No module named 'payguard.purchase'`
 
-- [ ] **Step 4: Write `billguard/outcome.py`**
+- [ ] **Step 4: Write `payguard/outcome.py`**
 
 ```python
 """Paid request send and design §3 step 6 outcome classification. Shared by purchase.py and reconcile.py."""
@@ -3014,8 +3057,8 @@ import httpx
 from x402.http.constants import PAYMENT_REQUIRED_HEADER, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER
 from x402.http.utils import decode_payment_required_header, decode_payment_response_header
 
-from billguard import artifacts
-from billguard.models import EvidenceKind, PaymentStatus, Purchase, history_entry
+from payguard import artifacts
+from payguard.models import EvidenceKind, PaymentStatus, Purchase, history_entry
 
 log = logging.getLogger(__name__)
 
@@ -3108,7 +3151,7 @@ def classify_outcome(repo: Any, row: Purchase, outcome: Outcome, from_state: Pay
     return repo.get_purchase(pid)
 ```
 
-- [ ] **Step 5: Write `billguard/purchase.py`**
+- [ ] **Step 5: Write `payguard/purchase.py`**
 
 ```python
 """Purchase state machine (design §3). Every transition is persisted before the next network call."""
@@ -3131,9 +3174,9 @@ from x402.http.utils import (
 )
 from x402.schemas import PaymentRequired, PaymentRequirements
 
-from billguard import artifacts, guard, reconcile, verify
-from billguard.guard import IntentDecision
-from billguard.models import (
+from payguard import artifacts, guard, reconcile, verify
+from payguard.guard import IntentDecision
+from payguard.models import (
     EvidenceKind,
     FindingCode,
     FulfillmentStatus,
@@ -3144,11 +3187,11 @@ from billguard.models import (
     fingerprint,
     history_entry,
 )
-from billguard.outcome import classify_outcome, send_paid_request
-from billguard.policy import MandateError, Policy, check_mandate, check_service_allowed
-from billguard.registry import Service
-from billguard.response import build_response
-from billguard.store.base import DuplicateKeyError, Repository
+from payguard.outcome import classify_outcome, send_paid_request
+from payguard.policy import MandateError, Policy, check_mandate, check_service_allowed
+from payguard.registry import Service
+from payguard.response import build_response
+from payguard.store.base import DuplicateKeyError, Repository
 
 log = logging.getLogger(__name__)
 P = PaymentStatus
@@ -3298,7 +3341,7 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
             client = deps.client_factory(service.network)
             payload = await client.create_payment_payload(pr.model_copy(update={"accepts": [selected]}))
             if payload.accepted != selected:
-                raise RuntimeError("SDK selected a different payment option than BillGuard authorized")
+                raise RuntimeError("SDK selected a different payment option than PayGuard authorized")
             auth = payload.payload["authorization"]
             if int(auth["value"]) != amount:
                 raise RuntimeError(f"signed value {auth['value']} != authorized {amount}")
@@ -3398,17 +3441,17 @@ Expected: all pass. If `test_happy_path...` fails on the evidence-kind order, ch
 - [ ] **Step 7: Commit**
 
 ```bash
-git add billguard/outcome.py billguard/purchase.py tests/conftest.py tests/test_purchase_flow.py
+git add payguard/outcome.py payguard/purchase.py tests/conftest.py tests/test_purchase_flow.py
 git commit -m "feat(core): purchase state machine with compare-and-set persistence and outcome classification"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_purchase_flow.py -q` → Expected: `passed`, 0 failed
 - Run: `uv run pytest -q` → Expected: all pass
-- Run: `grep -c 'await client.create_payment_payload' billguard/purchase.py` → Expected: `1`
-- Run: `grep -n 'async with LOCK' billguard/purchase.py | wc -l | tr -d ' '` → Expected: `3` (two in `purchase`, one in `run_from_quote`), and none of them encloses `http.request` or `send_paid_request` (reviewer reads the code)
-- Run: `grep -c 'P.PAYLOAD_SIGNED, P.SENT' billguard/purchase.py` → Expected: `1` and it appears textually before `send_paid_request(`
-- Run: `grep -c 'clip_timeout(service.timeout_s, deadline)' billguard/purchase.py` → Expected: `2` (quote and send are both clipped to the 45 s budget)
+- Run: `grep -c 'await client.create_payment_payload' payguard/purchase.py` → Expected: `1`
+- Run: `grep -n 'async with LOCK' payguard/purchase.py | wc -l | tr -d ' '` → Expected: `3` (two in `purchase`, one in `run_from_quote`), and none of them encloses `http.request` or `send_paid_request` (reviewer reads the code)
+- Run: `grep -c 'P.PAYLOAD_SIGNED, P.SENT' payguard/purchase.py` → Expected: `1` and it appears textually before `send_paid_request(`
+- Run: `grep -c 'clip_timeout(service.timeout_s, deadline)' payguard/purchase.py` → Expected: `2` (quote and send are both clipped to the 45 s budget)
 
 **Manual Sepolia check:** covered by Task 2.7.
 
@@ -3419,13 +3462,13 @@ git commit -m "feat(core): purchase state machine with compare-and-set persisten
 **§7 tests covered:** the schema test precondition (tool listing); stdout-protection probe.
 
 **Files:**
-- Create: `billguard/deps.py`, `billguard/server.py`
+- Create: `payguard/deps.py`, `payguard/server.py`
 
 **SDK calls:** FastMCP `FastMCP(name, instructions=..., lifespan=...)`, `@mcp.tool(...)`, `mcp.run()` (stdio default).
 
 **Implementer brief:** Wire everything into one stdio MCP server. `configure_logging()` runs before any other import that could print. The lifespan builds `Deps` and spawns `recovery.run_startup_recovery(deps)` with `asyncio.create_task` so the MCP initialize handshake is never blocked; the task sleeps 2 s before touching the store (the stub returns immediately for now; M3 fills it). Paid tools are thin typed wrappers over `purchase()`; **none takes any force/retry parameter**. Tool descriptions tell the agent to reuse `purchase_intent_id` and read `findings` before spending again. `reconcile_purchase` never creates a payment: it only calls `reconcile_and_finish`. `tier="premium"` on `get_company_report` routes to the `report_premium` service (Plan decision, Task 2.3). If the installed fastmcp version rejects `lifespan=` or `@mcp.tool(...)`, check `uv run python -c "import fastmcp; print(fastmcp.__version__)"` and adapt to that version's documented equivalent, then record the version in your report.
 
-- [ ] **Step 1: Write `billguard/deps.py`**
+- [ ] **Step 1: Write `payguard/deps.py`**
 
 ```python
 """Build the runtime Deps once: env, store, policy, registry, wallet, HTTP client factory."""
@@ -3437,11 +3480,11 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from billguard import wallet
-from billguard.policy import load_policy
-from billguard.purchase import Deps
-from billguard.registry import load_registry
-from billguard.store import open_repository
+from payguard import wallet
+from payguard.policy import load_policy
+from payguard.purchase import Deps
+from payguard.registry import load_registry
+from payguard.store import open_repository
 
 ROOT = Path(__file__).resolve().parents[1]
 _DEPS: Deps | None = None
@@ -3456,11 +3499,11 @@ def build_deps() -> Deps:
     load_dotenv(ROOT / ".env")
     return Deps(
         repo=open_repository(ROOT),
-        policy=load_policy(_abs("BILLGUARD_POLICY", "policy.yaml")),
+        policy=load_policy(_abs("PAYGUARD_POLICY", "policy.yaml")),
         registry=load_registry(),
         client_factory=wallet.build_client,
         http_factory=lambda svc: httpx.AsyncClient(timeout=svc.timeout_s),
-        artifact_dir=_abs("BILLGUARD_ARTIFACT_DIR", "artifacts"),
+        artifact_dir=_abs("PAYGUARD_ARTIFACT_DIR", "artifacts"),
     )
 
 
@@ -3471,13 +3514,13 @@ def get_deps() -> Deps:
     return _DEPS
 ```
 
-- [ ] **Step 2: Write `billguard/server.py`**
+- [ ] **Step 2: Write `payguard/server.py`**
 
 ```python
-"""BillGuard MCP server over stdio (design §6). stdout is JSON-RPC; all logs go to stderr."""
+"""PayGuard MCP server over stdio (design §6). stdout is JSON-RPC; all logs go to stderr."""
 from __future__ import annotations
 
-from billguard.logging_setup import configure_logging
+from payguard.logging_setup import configure_logging
 
 configure_logging()  # before anything else can print
 
@@ -3494,19 +3537,19 @@ from fastmcp import FastMCP  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # env-gated tool registration (M7) needs this at import time
 
-from billguard import recovery  # noqa: E402
-from billguard.deps import get_deps  # noqa: E402
-from billguard.models import PaymentStatus  # noqa: E402
-from billguard.purchase import CALL_BUDGET_S, purchase, reconcile_and_finish  # noqa: E402
-from billguard.response import build_response  # noqa: E402
+from payguard import recovery  # noqa: E402
+from payguard.deps import get_deps  # noqa: E402
+from payguard.models import PaymentStatus  # noqa: E402
+from payguard.purchase import CALL_BUDGET_S, purchase, reconcile_and_finish  # noqa: E402
+from payguard.response import build_response  # noqa: E402
 
-log = logging.getLogger("billguard.server")
+log = logging.getLogger("payguard.server")
 
 INSTRUCTIONS = (
-    "BillGuard buys from x402 sellers on your behalf and verifies what was delivered. "
+    "PayGuard buys from x402 sellers on your behalf and verifies what was delivered. "
     "Always pass a purchase_intent_id you made up for the task, and REUSE the same purchase_intent_id when you retry "
     "the same purchase. Read `findings` and `safe_next_actions` in every result before spending again. "
-    "BillGuard never pays twice for the same purchase and has no tool that can make a second payment; a human must approve that."
+    "PayGuard never pays twice for the same purchase and has no tool that can make a second payment; a human must approve that."
 )
 REUSE = ("Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` "
          "in the result before spending again.")
@@ -3530,7 +3573,7 @@ async def lifespan(_server: FastMCP):
         task.cancel()
 
 
-mcp = FastMCP("billguard", instructions=INSTRUCTIONS, lifespan=lifespan)
+mcp = FastMCP("payguard", instructions=INSTRUCTIONS, lifespan=lifespan)
 
 
 # ---- paid tools (design §6): (<service args>, purchase_intent_id, task_id). No force/retry parameter exists. ----
@@ -3602,7 +3645,7 @@ if __name__ == "__main__":
 
 Run: `uv run python -c "
 import asyncio
-from billguard.server import mcp
+from payguard.server import mcp
 async def main():
     tools = await mcp.get_tools()
     names = sorted(tools)
@@ -3615,7 +3658,7 @@ async def main():
 asyncio.run(main())"`
 Expected: a sorted list containing `convert_document, get_company_report, get_purchase, get_research_report, get_spending_policy, list_findings, list_services, reconcile_purchase`, then `schema ok`. (If `get_tools` does not exist in the installed fastmcp, use that version's documented tool listing and record it; the M3 schema test must use the same call.)
 
-Run: `(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}\n'; sleep 3) | uv run python -m billguard.server 2>/dev/null | head -c 400`
+Run: `(printf '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}\n'; sleep 3) | uv run python -m payguard.server 2>/dev/null | head -c 400`
 Expected: one JSON-RPC line starting with `{"jsonrpc":"2.0","id":1,"result":` and nothing else on stdout (logs went to stderr, which is discarded here).
 
 - [ ] **Step 4: Register in Claude Desktop (operator)**
@@ -3624,9 +3667,9 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) a
 ```json
 {
   "mcpServers": {
-    "billguard": {
+    "payguard": {
       "command": "/ABSOLUTE/PATH/TO/uv",
-      "args": ["run", "--directory", "/ABSOLUTE/PATH/TO/pay-guard", "python", "-m", "billguard.server"]
+      "args": ["run", "--directory", "/ABSOLUTE/PATH/TO/pay-guard", "python", "-m", "payguard.server"]
     }
   }
 }
@@ -3636,18 +3679,18 @@ Restart Claude Desktop. The seller must be running (`uv run uvicorn sellers.app:
 - [ ] **Step 5: Commit**
 
 ```bash
-git add billguard/deps.py billguard/server.py
+git add payguard/deps.py payguard/server.py
 git commit -m "feat(server): FastMCP stdio server with paid and admin tools, background recovery task"
 ```
 
 **Exit criteria (auto):**
 - Step 3's schema command prints `schema ok`.
-- Run: `grep -c 'force' billguard/server.py` → Expected: `1` (only the comment "No force/retry parameter exists")
-- Run: `grep -c 'def approve_retry' billguard/server.py` → Expected: `0`
-- Run: `grep -c 'asyncio.create_task' billguard/server.py` → Expected: `1`
-- Run: `grep -rn 'print(' billguard/ | wc -l | tr -d ' '` → Expected: `0`
+- Run: `grep -c 'force' payguard/server.py` → Expected: `1` (only the comment "No force/retry parameter exists")
+- Run: `grep -c 'def approve_retry' payguard/server.py` → Expected: `0`
+- Run: `grep -c 'asyncio.create_task' payguard/server.py` → Expected: `1`
+- Run: `grep -rn 'print(' payguard/ | wc -l | tr -d ' '` → Expected: `0`
 
-**Manual Sepolia check (M2 checkpoint, metric 2):** in Claude Desktop, prompt: *"Use BillGuard to buy the company report for ticker ACME. Use purchase intent id demo-report-1."* The tool result shows `payment_status: SETTLED`, `fulfillment_status: VERIFIED`, a `settlement_tx`, and an `explorer_url` that opens a Sepolia USDC transfer of 0.50 to the seller address.
+**Manual Sepolia check (M2 checkpoint, metric 2):** in Claude Desktop, prompt: *"Use PayGuard to buy the company report for ticker ACME. Use purchase intent id demo-report-1."* The tool result shows `payment_status: SETTLED`, `fulfillment_status: VERIFIED`, a `settlement_tx`, and an `explorer_url` that opens a Sepolia USDC transfer of 0.50 to the seller address.
 
 ### Task 2.8: `scripts/reset_demo.py --yes` `[W-CORE]`
 
@@ -3659,15 +3702,15 @@ git commit -m "feat(server): FastMCP stdio server with paid and admin tools, bac
 **Files:**
 - Create: `scripts/reset_demo.py`
 
-**Implementer brief:** Rehearsals start now, so the reset script is needed now. It wipes BillGuard's ledger for the configured principal on the active store (which also clears the 15-minute duplicate guard and the spend), prints what it deleted and the remaining USDC balances, and refuses to run without `--yes`. On-chain transfers are never undone; artifact files on disk are left alone.
+**Implementer brief:** Rehearsals start now, so the reset script is needed now. It wipes PayGuard's ledger for the configured principal on the active store (which also clears the 15-minute duplicate guard and the spend), prints what it deleted and the remaining USDC balances, and refuses to run without `--yes`. On-chain transfers are never undone; artifact files on disk are left alone.
 
 - [ ] **Step 1: Write the script**
 
 ```python
-"""Wipe BillGuard demo state between rehearsals (design §8). Refuses to run without --yes.
+"""Wipe PayGuard demo state between rehearsals (design §8). Refuses to run without --yes.
 
 Deletes the configured principal's purchases, evidence and findings on the active store
-(BILLGUARD_STORE). Clears the 15-minute duplicate guard and the per-principal spend.
+(PAYGUARD_STORE). Clears the 15-minute duplicate guard and the per-principal spend.
 On-chain transfers are not undone. Artifact files are left on disk.
 """
 from __future__ import annotations
@@ -3675,7 +3718,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from billguard.deps import get_deps
+from payguard.deps import get_deps
 from scripts.setup_wallets import main as wallets_main
 
 
@@ -3728,10 +3771,10 @@ git commit -m "feat(scripts): reset_demo wipes the principal's ledger between re
 **§7 tests covered:** none in the design; adds `tests/test_response_stats.py`.
 
 **Files:**
-- Modify: `billguard/response.py` (three new sections in every response), `billguard/server.py` (`list_purchases` admin tool; `get_spending_policy` gains `budget`), `billguard/store/base.py` + `billguard/store/sqlite.py` (`list_purchases(principal_id, limit)`)
+- Modify: `payguard/response.py` (three new sections in every response), `payguard/server.py` (`list_purchases` admin tool; `get_spending_policy` gains `budget`), `payguard/store/base.py` + `payguard/store/sqlite.py` (`list_purchases(principal_id, limit)`)
 - Test: `tests/test_response_stats.py`
 
-**Implementer brief:** Every paid tool, `get_purchase` and `reconcile_purchase` already return `build_response(...)`, so this is where the statistics go: a `transactions` list (what money moved or may have moved in this purchase, with proof), a `delivery` block (a level derived only from the deterministic checks BillGuard already ran, never a guessed probability), and a `budget` block (spent and remaining). Add a read-only `list_purchases` admin tool so the agent can recite every transaction of the session in one call. Levels are exactly four: `verified` (all checks passed), `partial` (artifact delivered but at least one named check failed), `unverified` (checks could not run), `none` (nothing delivered, or no settled payment). The `basis` string says why. Do not change any existing key.
+**Implementer brief:** Every paid tool, `get_purchase` and `reconcile_purchase` already return `build_response(...)`, so this is where the statistics go: a `transactions` list (what money moved or may have moved in this purchase, with proof), a `delivery` block (a level derived only from the deterministic checks PayGuard already ran, never a guessed probability), and a `budget` block (spent and remaining). Add a read-only `list_purchases` admin tool so the agent can recite every transaction of the session in one call. Levels are exactly four: `verified` (all checks passed), `partial` (artifact delivered but at least one named check failed), `unverified` (checks could not run), `none` (nothing delivered, or no settled payment). The `basis` string says why. Do not change any existing key.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3739,9 +3782,9 @@ git commit -m "feat(scripts): reset_demo wipes the principal's ledger between re
 ```python
 import time
 
-from billguard.models import EvidenceKind, FulfillmentStatus, PaymentStatus, history_entry
-from billguard.purchase import purchase
-from billguard.response import build_response, compact_purchase
+from payguard.models import EvidenceKind, FulfillmentStatus, PaymentStatus, history_entry
+from payguard.purchase import purchase
+from payguard.response import build_response, compact_purchase
 from tests.conftest import FakeSeller
 from tests.test_guard import seed
 
@@ -3804,7 +3847,7 @@ async def test_list_purchases_newest_first_with_levels(deps, seller):
 
 
 async def test_list_purchases_tool_and_policy_budget():
-    from billguard.server import mcp
+    from payguard.server import mcp
 
     tools = await mcp.get_tools()
     assert "list_purchases" in tools and set(tools["list_purchases"].parameters["properties"]) <= {"limit"}
@@ -3817,11 +3860,11 @@ Expected: `ImportError: cannot import name 'compact_purchase'`
 
 - [ ] **Step 3: Add `list_purchases` to the store**
 
-`billguard/store/base.py`, inside `Repository` after `find_recent_by_fingerprint`:
+`payguard/store/base.py`, inside `Repository` after `find_recent_by_fingerprint`:
 ```python
     def list_purchases(self, principal_id: str, limit: int = 50) -> list[Purchase]: ...
 ```
-`billguard/store/sqlite.py`, after `find_recent_by_fingerprint`:
+`payguard/store/sqlite.py`, after `find_recent_by_fingerprint`:
 ```python
     def list_purchases(self, principal_id: str, limit: int = 50) -> list[Purchase]:
         rows = self.conn.execute(
@@ -3832,7 +3875,7 @@ Expected: `ImportError: cannot import name 'compact_purchase'`
 ```
 (The Supabase backend in Task 6.1 implements the same method; its task text includes it.)
 
-- [ ] **Step 4: Extend `billguard/response.py`**
+- [ ] **Step 4: Extend `payguard/response.py`**
 
 Add after `explorer_url`:
 ```python
@@ -3905,9 +3948,9 @@ In `build_response`, add these three keys to the returned dict (keep every exist
         "budget": budget_summary(deps),
 ```
 
-- [ ] **Step 5: Add the admin tool and the budget block in `billguard/server.py`**
+- [ ] **Step 5: Add the admin tool and the budget block in `payguard/server.py`**
 
-Import `budget_summary, compact_purchase` from `billguard.response`. Change `get_spending_policy` to return `{**deps.policy.to_dict(), "currency": "USDC", **budget_summary(deps)}` (keeps `spent_minor` and `remaining_minor`). Add after `list_findings`:
+Import `budget_summary, compact_purchase` from `payguard.response`. Change `get_spending_policy` to return `{**deps.policy.to_dict(), "currency": "USDC", **budget_summary(deps)}` (keeps `spent_minor` and `remaining_minor`). Add after `list_findings`:
 ```python
 @mcp.tool(description="List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. Read-only.")
 async def list_purchases(limit: int = 50) -> dict[str, Any]:
@@ -3921,14 +3964,14 @@ async def list_purchases(limit: int = 50) -> dict[str, Any]:
 Run: `uv run pytest tests/test_response_stats.py -q` → all pass. Run: `uv run pytest -q` → all pass.
 
 ```bash
-git add billguard/response.py billguard/server.py billguard/store/base.py billguard/store/sqlite.py tests/test_response_stats.py
+git add payguard/response.py payguard/server.py payguard/store/base.py payguard/store/sqlite.py tests/test_response_stats.py
 git commit -m "feat(response): transactions, delivery level and budget on every result; list_purchases admin tool"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_response_stats.py -q` → Expected: `passed`, 0 failed
-- Run: `uv run python -c "from billguard.response import delivery_summary; import inspect; src=inspect.getsource(delivery_summary); assert all(l in src for l in ('\"verified\"','\"partial\"','\"unverified\"','\"none\"')); print('levels ok')"` → Expected: `levels ok`
-- Run: `grep -c 'def list_purchases' billguard/server.py billguard/store/sqlite.py` → Expected: `1` each
+- Run: `uv run python -c "from payguard.response import delivery_summary; import inspect; src=inspect.getsource(delivery_summary); assert all(l in src for l in ('\"verified\"','\"partial\"','\"unverified\"','\"none\"')); print('levels ok')"` → Expected: `levels ok`
+- Run: `grep -c 'def list_purchases' payguard/server.py payguard/store/sqlite.py` → Expected: `1` each
 - Run: `uv run pytest tests/test_schema.py -q` (after M3) → Expected: pass (the new tool has no force/retry parameter)
 
 **Manual Sepolia check:** after any purchase in Claude Desktop the result shows `transactions`, `delivery` and `budget`; `list_purchases` lists the session's purchases newest first with a delivery level each; the research purchase shows `proof: chain_check` and `delivery.level: none`, the convert one `partial` with `failed: ["pdf_page_count"]`.
@@ -3940,7 +3983,7 @@ git commit -m "feat(response): transactions, delivery level and budget on every 
 Operator verification list:
 - [ ] `uv run pytest -q` is green (models, store, policy, verify, purchase flow).
 - [ ] The stdio probe in Task 2.7 step 3 shows exactly one JSON-RPC line on stdout.
-- [ ] Claude Desktop lists the `billguard` server with 8 tools; none of the paid tools has a `force`/`retry` parameter; there is no `approve_retry` tool.
+- [ ] Claude Desktop lists the `payguard` server with 8 tools; none of the paid tools has a `force`/`retry` parameter; there is no `approve_retry` tool.
 - [ ] Prompt *"buy the company report for ACME, purchase intent id demo-report-1"* returns `SETTLED` + `VERIFIED` + `settlement_tx`; the explorer link shows 0.50 USDC to the seller.
 - [ ] Prompt *"buy it again with the same purchase intent id"* returns the same `purchase_id` and no second transfer on the explorer.
 - [ ] `get_spending_policy` shows `spent_minor: 500000`; `list_findings` is empty.
@@ -3969,7 +4012,7 @@ Three people: run all three at once (00:20–02:00). One person: M3 (60 min) →
 **§7 tests covered:** "the duplicate guard", "attempt+1 after PAYMENT_FAILED", "the duplicate beat in both variants (S1)", "SERVICE_QUARANTINED after an unresolved PAID_NO_DELIVERY (S3)".
 
 **Files:**
-- Modify: `billguard/guard.py` (replace the stub body; keep the signature)
+- Modify: `payguard/guard.py` (replace the stub body; keep the signature)
 - Test: `tests/test_guard.py`
 
 **Implementer brief:** Replace the M2 stub of `resolve_intent` with design §3 step 1 exactly. The function runs **under the process lock** and does DB work only (no network): the caller handles reconciliation when you return `reconcile_first=True`, then calls you again with `after_reconcile=True`. Decision table for an existing `(principal, intent, fingerprint)` key, looking at the latest attempt: `SETTLEMENT_UNKNOWN` and not `after_reconcile` → return with `reconcile_first=True`; `PAYMENT_FAILED` or `ABANDONED` → proceed with `attempt+1` and `supersedes` set (no money moved); in flight → return it (the response shows `IN_PROGRESS`); `SETTLEMENT_UNKNOWN` (still) or `SETTLED` with fulfillment not `VERIFIED` → return it, attach `DUPLICATE_SUSPECTED` once, append a `retry_blocked` evidence row every hit (S1); `SETTLED`+`VERIFIED` or `REJECTED` → return unchanged. For a new key: first the service quarantine (S3): if the service has an unresolved `PAID_NO_DELIVERY` finding for this principal, create the row and reject it `SERVICE_QUARANTINED` with a finding and `safe_next_actions: [human_review]`, no quote, no payment; then the duplicate guard: any row with the same `(principal, fingerprint)` from the last 15 minutes that is in flight, `SETTLEMENT_UNKNOWN`, or `SETTLED`-not-`VERIFIED` is returned with `DUPLICATE_SUSPECTED` (if it is `SETTLEMENT_UNKNOWN` and not `after_reconcile`, ask for reconciliation first). A verified purchase under a fresh intent pays again by design. The quarantine also applies to `attempt+1` rows (stricter than the letter of §3 but inside its intent: "new purchases from it are rejected"). Order matters: the duplicate guard runs **before** the quarantine so the same topic under a new intent id returns the existing record (Appendix B.11). A same-key row that was `REJECTED/SERVICE_QUARANTINED` may proceed as `attempt+1` once the quarantine is lifted (nothing was signed). In-flight same-key repeats also get the finding (PRD F7, Appendix B.10) while the response shows `IN_PROGRESS`.
@@ -3982,9 +4025,9 @@ import time
 
 import pytest
 
-from billguard.guard import resolve_intent
-from billguard.models import FindingCode, FulfillmentStatus, PaymentStatus, Purchase, fingerprint
-from billguard.purchase import purchase
+from payguard.guard import resolve_intent
+from payguard.models import FindingCode, FulfillmentStatus, PaymentStatus, Purchase, fingerprint
+from payguard.purchase import purchase
 from tests.conftest import FakeSeller
 
 P = PaymentStatus
@@ -4050,7 +4093,7 @@ def test_same_key_in_flight_returns_in_progress_with_duplicate_finding(deps):
     assert d.action == "return" and d.row.purchase_id == row.purchase_id and not d.reconcile_first
     assert d.row.payment_status == P.SENT
     assert [f.code for f in deps.repo.findings_for_purchase(row.purchase_id)] == ["DUPLICATE_SUSPECTED"]
-    from billguard.response import build_response
+    from payguard.response import build_response
     assert build_response(deps, d.row)["payment_status"] == "IN_PROGRESS"
 
 
@@ -4157,7 +4200,7 @@ async def test_flow_same_intent_and_new_intent_both_blocked_without_payment(make
 Run: `uv run pytest tests/test_guard.py -q`
 Expected: failures in the same-key unknown/duplicate/attempt+1 tests, the new-intent duplicate tests, the quarantine test and the flow test. Six tests already pass against the M2 stub (`test_new_key_proceeds`, both terminal-row cases, `test_new_intent_verified_pays_again_by_design`, `test_duplicate_guard_window_is_15_minutes`) plus the in-flight test's first two assertions; that is expected.
 
-- [ ] **Step 3: Replace `billguard/guard.py`**
+- [ ] **Step 3: Replace `payguard/guard.py`**
 
 ```python
 """Design §3 step 1: intent lookup, service quarantine (S3), duplicate guard, same-intent retry (S1).
@@ -4172,7 +4215,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from billguard.models import (
+from payguard.models import (
     IN_FLIGHT,
     EvidenceKind,
     FindingCode,
@@ -4185,7 +4228,7 @@ from billguard.models import (
     iso_now,
     now,
 )
-from billguard.registry import Service
+from payguard.registry import Service
 
 log = logging.getLogger(__name__)
 P = PaymentStatus
@@ -4300,15 +4343,15 @@ Expected: all pass (the M2 suite still holds; `test_same_intent_returns_existing
 - [ ] **Step 5: Commit**
 
 ```bash
-git add billguard/guard.py tests/test_guard.py
+git add payguard/guard.py tests/test_guard.py
 git commit -m "feat(guard): same-intent retry, duplicate guard, service quarantine, attempt+1 after proven failure"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_guard.py -q` → Expected: `passed`, 0 failed
 - Run: `uv run pytest -q` → Expected: all pass
-- Run: `grep -c 'DUPLICATE_WINDOW_S = 15 \* 60' billguard/guard.py` → Expected: `1`
-- Run: `grep -c 'httpx\|aiohttp\|requests' billguard/guard.py` → Expected: `0` (no network under the lock)
+- Run: `grep -c 'DUPLICATE_WINDOW_S = 15 \* 60' payguard/guard.py` → Expected: `1`
+- Run: `grep -c 'httpx\|aiohttp\|requests' payguard/guard.py` → Expected: `0` (no network under the lock)
 
 **Manual Sepolia check (M3 checkpoint part 2):** in Claude Desktop with the seller running: *"Convert document d1 to a 20-page PDF, purchase intent id demo-convert-1"* (settles, not VERIFIED because `/convert` returns 12 pages). Then *"Convert document d1 to a 20-page PDF again, use a new purchase intent id demo-convert-2"* → the result has the **same** `purchase_id`, a `DUPLICATE_SUSPECTED` finding, `safe_next_actions` of `human_review`/`report_to_seller`, and the explorer shows exactly one 2.00 USDC transfer.
 
@@ -4320,7 +4363,7 @@ git commit -m "feat(guard): same-intent retry, duplicate guard, service quaranti
 **§7 tests covered:** "one case per transition, including ABANDONED".
 
 **Files:**
-- Modify: `billguard/recovery.py` (replace the stub)
+- Modify: `payguard/recovery.py` (replace the stub)
 - Test: `tests/test_recovery.py`
 
 **Implementer brief:** Implement the recovery pass that `server.py` already spawns from the lifespan (after a 2 s sleep, in a background task). It touches only rows whose `updated_at` is older than 60 s. `INTENT_RECORDED`/`QUOTED`/`AUTHORIZED` rows become `ABANDONED` (nothing was signed: the budget is freed, no proven finding). `PAYLOAD_SIGNED`/`SENT` rows become `SETTLEMENT_UNKNOWN` and are reconciled through `purchase.reconcile_and_finish`. Every write is compare-and-set, so a second live process cannot be stomped on.
@@ -4331,9 +4374,9 @@ git commit -m "feat(guard): same-intent retry, duplicate guard, service quaranti
 ```python
 import time
 
-from billguard import reconcile as reconcile_mod
-from billguard.models import PaymentStatus
-from billguard.recovery import STALE_S, run_startup_recovery
+from payguard import reconcile as reconcile_mod
+from payguard.models import PaymentStatus
+from payguard.recovery import STALE_S, run_startup_recovery
 from tests.test_guard import seed
 
 P = PaymentStatus
@@ -4384,7 +4427,7 @@ async def test_recovery_is_idempotent(deps, monkeypatch):
 Run: `uv run pytest tests/test_recovery.py -q`
 Expected: `ImportError: cannot import name 'STALE_S'`
 
-- [ ] **Step 3: Replace `billguard/recovery.py`**
+- [ ] **Step 3: Replace `payguard/recovery.py`**
 
 ```python
 """Startup recovery (design §3 Sugg. 5, PRD F10).
@@ -4398,8 +4441,8 @@ import logging
 import time
 from typing import Any
 
-from billguard.models import SIGNED_IN_FLIGHT, UNSIGNED_IN_FLIGHT, PaymentStatus, history_entry
-from billguard.purchase import CALL_BUDGET_S, reconcile_and_finish
+from payguard.models import SIGNED_IN_FLIGHT, UNSIGNED_IN_FLIGHT, PaymentStatus, history_entry
+from payguard.purchase import CALL_BUDGET_S, reconcile_and_finish
 
 log = logging.getLogger(__name__)
 P = PaymentStatus
@@ -4435,13 +4478,13 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add billguard/recovery.py tests/test_recovery.py
+git add payguard/recovery.py tests/test_recovery.py
 git commit -m "feat(recovery): abandon unsigned stale rows, reconcile signed ones, compare-and-set only"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_recovery.py -q` → Expected: `passed`, 0 failed
-- Run: `grep -c 'STALE_S = 60.0' billguard/recovery.py` → Expected: `1`
+- Run: `grep -c 'STALE_S = 60.0' payguard/recovery.py` → Expected: `1`
 
 **Manual Sepolia check:** kill the MCP server mid-call is not practical; instead, with the seller stopped, start a purchase in Claude Desktop (it will reject `NOT_X402`), then restart Claude Desktop and confirm the stderr log of the server (Claude Desktop → Settings → Developer → logs) shows `startup recovery: nothing to do` within a few seconds of start, and the server answered `list_services` before that line.
 
@@ -4466,7 +4509,7 @@ import time
 
 import pytest
 
-from billguard.models import (
+from payguard.models import (
     SAFE_NEXT_ACTION_PREFIXES,
     Finding,
     FindingCode,
@@ -4475,14 +4518,14 @@ from billguard.models import (
     Purchase,
     RejectReason,
 )
-from billguard.response import safe_next_actions
+from payguard.response import safe_next_actions
 
 PAID_TOOLS = ("get_company_report", "get_research_report", "convert_document")
 ADMIN_TOOLS = ("list_services", "get_spending_policy", "get_purchase", "list_findings", "reconcile_purchase")
 
 
 async def test_mcp_schema_has_no_force_retry_and_no_approve_retry():
-    from billguard.server import mcp
+    from payguard.server import mcp
 
     tools = await mcp.get_tools()
     names = set(tools)
@@ -4553,7 +4596,7 @@ Operator verification list:
 
 ## Milestone M4 — Conversion: PDF artifact, validators, findings `[W-VERIFY]`
 
-**Timebox:** 45 min. **Cut if overrun:** `content_hash` (review S10: `non_empty` is enough for the Bazaar seller); keep `pdf_page_count`. Taking this cut means the controller also changes the Bazaar entry's validators in `billguard/registry.py` to `("non_empty",)` (one-line edit, `[W-CORE]` file), otherwise `resolve()` raises and the Bazaar buy is `FULFILLMENT_UNVERIFIED`.
+**Timebox:** 45 min. **Cut if overrun:** `content_hash` (review S10: `non_empty` is enough for the Bazaar seller); keep `pdf_page_count`. Taking this cut means the controller also changes the Bazaar entry's validators in `payguard/registry.py` to `("non_empty",)` (one-line edit, `[W-CORE]` file), otherwise `resolve()` raises and the Bazaar buy is `FULFILLMENT_UNVERIFIED`.
 **Checkpoint (§8.4):** `FULFILLMENT_FAILED` with evidence (page count 12 vs 20).
 
 ### Task 4.1: PDF page count, `pdf_page_count` and `content_hash` validators, convert flow `[W-VERIFY]`
@@ -4564,7 +4607,7 @@ Operator verification list:
 **§7 tests covered:** "each validator" (pdf_page_count, content_hash) and the scenario-C flow.
 
 **Files:**
-- Modify: `billguard/artifacts.py` (fill `pdf_page_count`), `billguard/verify.py` (add two validators)
+- Modify: `payguard/artifacts.py` (fill `pdf_page_count`), `payguard/verify.py` (add two validators)
 - Test: `tests/test_artifacts.py`, `tests/test_verify.py` (append)
 
 **Implementer brief:** Fill the `pdf_page_count` stub in `artifacts.py` with pypdf, so every stored PDF artifact carries `page_count`. Add two validators: `pdf_page_count` compares the artifact's page count with `args["pages"]` and fails with a reason naming both numbers; `content_hash` re-hashes the delivered bytes (from the path for file artifacts) and checks they match the recorded `sha256`, recording the hash in the detail so the finding can cite it (for inline JSON artifacts it records the stored hash and passes). Then prove the whole scenario C through `purchase()`: `/convert` returns 12 pages against 20 → `SETTLED`, `fulfillment_status: FAILED`, one `FULFILLMENT_FAILED` finding (proven) whose `evidence_ids` contain the validator row and the artifact row, `safe_next_actions == ["human_review", "report_to_seller"]`, and the response artifact is a path with `page_count: 12`, never base64.
@@ -4573,7 +4616,7 @@ Operator verification list:
 
 `tests/test_artifacts.py`:
 ```python
-from billguard.artifacts import pdf_page_count, store_artifact
+from payguard.artifacts import pdf_page_count, store_artifact
 from tests.conftest import pdf_bytes
 
 
@@ -4593,7 +4636,7 @@ Append to `tests/test_verify.py`:
 
 
 # ---- M4: pdf_page_count and content_hash ----
-from billguard.purchase import purchase
+from payguard.purchase import purchase
 from tests.conftest import pdf_bytes
 
 
@@ -4608,7 +4651,7 @@ def test_pdf_page_count_validator(reg, tmp_path):
 
 def test_content_hash_validator(tmp_path):
     from dataclasses import replace
-    from billguard.verify import content_hash
+    from payguard.verify import content_hash
     svc = replace(load_registry(base_url="http://x")["report"], validators=("content_hash",))
     art = store_artifact(b"hello", "text/plain", "p10", tmp_path)
     name, passed, detail = content_hash(svc, {}, art)
@@ -4634,7 +4677,7 @@ async def test_convert_flow_fulfillment_failed_with_evidence(deps, seller):
 Run: `uv run pytest tests/test_artifacts.py tests/test_verify.py -q`
 Expected: the new tests fail (`page_count` is `None`, `content_hash` import error, convert flow `UNVERIFIED`).
 
-- [ ] **Step 3: Fill `pdf_page_count` in `billguard/artifacts.py`**
+- [ ] **Step 3: Fill `pdf_page_count` in `payguard/artifacts.py`**
 
 Replace the stub function with:
 ```python
@@ -4648,12 +4691,12 @@ def pdf_page_count(path: str) -> int | None:
         return None
 ```
 
-- [ ] **Step 4: Add the validators to `billguard/verify.py`**
+- [ ] **Step 4: Add the validators to `payguard/verify.py`**
 
 Add after `non_empty` and register both in `VALIDATORS`:
 ```python
 def pdf_page_count(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
-    from billguard import artifacts as _artifacts
+    from payguard import artifacts as _artifacts
 
     expected = int(args.get("pages", 0))
     actual = art.page_count if art.page_count is not None else (_artifacts.pdf_page_count(art.path) if art.path else None)
@@ -4690,13 +4733,13 @@ Expected: all pass. (`tests/test_purchase_flow.py::test_convert_without_pdf_vali
 - [ ] **Step 6: Commit**
 
 ```bash
-git add billguard/artifacts.py billguard/verify.py tests/test_artifacts.py tests/test_verify.py
+git add payguard/artifacts.py payguard/verify.py tests/test_artifacts.py tests/test_verify.py
 git commit -m "feat(verify): pdf_page_count and content_hash validators; convert yields FULFILLMENT_FAILED with evidence"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_artifacts.py tests/test_verify.py -q` → Expected: `passed`, 0 failed
-- Run: `uv run python -c "from billguard.verify import VALIDATORS; print(sorted(VALIDATORS))"` → Expected: `['content_hash', 'content_type', 'non_empty', 'pdf_page_count', 'ticker_matches']`
+- Run: `uv run python -c "from payguard.verify import VALIDATORS; print(sorted(VALIDATORS))"` → Expected: `['content_hash', 'content_type', 'non_empty', 'pdf_page_count', 'ticker_matches']`
 - Run: `uv run pytest -q` → Expected: all pass
 
 **Manual Sepolia check (M4 checkpoint, metric 5):** in Claude Desktop: *"Convert document contract-7 to a 20-page PDF, purchase intent id demo-convert-9"* → `SETTLED`, `fulfillment_status: FAILED`, a `FULFILLMENT_FAILED` finding whose summary says page count 12 vs 20, `artifact.path` ending in `.pdf` with `page_count: 12`, `safe_next_actions: [human_review, report_to_seller]`. Claude has no tool to pay again. `ls artifacts/` shows the PDF.
@@ -4729,7 +4772,7 @@ git commit -m "feat(verify): pdf_page_count and content_hash validators; convert
 **SDK calls:** `server.on_after_settle(hook)`; the hook receives a `SettleResultContext` whose `.transport_context` is an `HTTPTransportContext` with `.request: HTTPRequestContext` (fields `adapter`, `path`, `method`, ...; no `.url`).
 **§7 tests covered:** "one hook unit test: with `HTTPRequestContext(adapter=DummyAdapter(), path="/report", method="GET")` the hook returns at once, and with `/research-slow` it sleeps (patched)".
 
-**Implementer brief:** Scenario B needs the seller to settle on-chain and then stall its response so BillGuard's 15 s client timeout fires. Put the hook in its own module (`sellers/stall.py`) so it can be unit-tested without booting the app (importing `sellers/app.py` contacts the facilitator). The hook is `async`, gates on `ctx.transport_context is not None and ctx.transport_context.request.path == "/research-slow"` (`decoded_path` also acceptable), sleeps `SELLER_STALL_S` (default 90) only then, returns immediately for every other route, and **never raises** (a raising hook turns every settle into a 402). Use `asyncio.sleep`, never `time.sleep`. `sellers/` still imports nothing from `billguard`.
+**Implementer brief:** Scenario B needs the seller to settle on-chain and then stall its response so PayGuard's 15 s client timeout fires. Put the hook in its own module (`sellers/stall.py`) so it can be unit-tested without booting the app (importing `sellers/app.py` contacts the facilitator). The hook is `async`, gates on `ctx.transport_context is not None and ctx.transport_context.request.path == "/research-slow"` (`decoded_path` also acceptable), sleeps `SELLER_STALL_S` (default 90) only then, returns immediately for every other route, and **never raises** (a raising hook turns every settle into a 402). Use `asyncio.sleep`, never `time.sleep`. `sellers/` still imports nothing from `payguard`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4796,7 +4839,7 @@ Expected: `ModuleNotFoundError: No module named 'sellers.stall'`
 - [ ] **Step 3: Write `sellers/stall.py`**
 
 ```python
-"""Scenario B after-settle stall for /research-slow (design §4, N1). Imports nothing from billguard.
+"""Scenario B after-settle stall for /research-slow (design §4, N1). Imports nothing from payguard.
 
 The hook runs after the facilitator has settled on-chain and the receipt was awaited. Sleeping here
 only delays the HTTP response; the transfer is already final. Gated on the HTTPRequestContext path,
@@ -4857,7 +4900,7 @@ git commit -m "feat(sellers): after-settle stall hook gated on /research-slow on
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_seller_hook.py -q` → Expected: `passed`, 0 failed
-- Run: `grep -rn billguard sellers/ | wc -l | tr -d ' '` → Expected: `0`
+- Run: `grep -rn payguard sellers/ | wc -l | tr -d ' '` → Expected: `0`
 - Run: `grep -c 'time.sleep' sellers/stall.py sellers/app.py` → Expected: both `0`
 - Run: `grep -c 'on_after_settle' sellers/app.py` → Expected: `1`
 
@@ -4869,8 +4912,8 @@ git commit -m "feat(sellers): after-settle stall hook gated on /research-slow on
 **Timebox:** 45 min.
 
 **Files:**
-- Create: `billguard/chain.py`
-- Modify: `billguard/reconcile.py` (replace the stub)
+- Create: `payguard/chain.py`
+- Modify: `payguard/reconcile.py` (replace the stub)
 - Test: `tests/test_reconcile.py`
 
 **SDK calls:** `AUTHORIZATION_STATE_ABI` from `x402.mechanisms.evm.constants`; web3.py `Web3(HTTPProvider(rpc))`, `w3.eth.get_block("latest")`, `contract.functions.authorizationState(from, nonce).call(block_identifier=n)`. Reuses `outcome.send_paid_request` and `outcome.classify_outcome` for the resend.
@@ -4878,7 +4921,7 @@ git commit -m "feat(sellers): after-settle stall hook gated on /research-slow on
 
 **Implementer brief:** Implement design §5 for a `SETTLEMENT_UNKNOWN` row. Read `from`, `nonce`, `validBefore` and the encoded header from the `payment_payload` evidence. Poll `authorizationState(from, nonce)` up to 5 times, 2 s apart, stopping at the first `true` and respecting the call deadline; read the block number and **block timestamp at the same block** (S5).
 
-**Settlement proof (Appendix B.20, from external review).** Under EIP-3009 a nonce is consumed by a successful `transferWithAuthorization` **or** by `cancelAuthorization`, so `authorizationState == true` alone proves only "this authorization can never be used again", not "money moved". The chain reader therefore does three reads when the state is `true`: (1) `authorizationState` at block N; (2) an `eth_getLogs` for USDC's `AuthorizationUsed(authorizer, nonce)` and `AuthorizationCanceled(authorizer, nonce)` events (both fields are indexed; verified on Base Sepolia USDC), searched from the block the purchase started in, in windows of 100 blocks because public RPCs reject larger ranges; (3) for a `used` event, the receipt of that transaction, checking it holds a USDC `Transfer(from=buyer, to=payTo, value=amount)` log. Decision table: `true` + `used` event + matching `Transfer` → `SETTLED` with `settlement_tx` set to that transaction (the demo now gets a real tx link even in scenario B); `true` + `canceled` event → `PAYMENT_FAILED` (proven: nothing can move; only the buyer key can cancel, which BillGuard never does); `true` but no event found or `Transfer` mismatch → the row **stays `SETTLEMENT_UNKNOWN`** with a finding saying "nonce consumed, transfer unproven; do not retry; human review", no resend (a consumed nonce cannot be resent), and the duplicate guard keeps blocking retries; `false` with block timestamp beyond `validBefore + 30 s` → `PAYMENT_FAILED` (proven finding); `false` and still valid → **one** resend of the identical stored header with an 8 s timeout, recorded as `resend` evidence and classified by `classify_outcome` (never re-entering reconcile); if that did not settle, **one more** poll, then stop. The `PAYMENT-REQUIRED.error` text from a 402 (for example `invalid_exact_evm_nonce_already_used`) is recorded but never decides money. The chain reader is injectable through `deps.chain_reader` so tests use fakes; the default is `chain.authorization_state`, which runs the blocking web3 calls in a thread.
+**Settlement proof (Appendix B.20, from external review).** Under EIP-3009 a nonce is consumed by a successful `transferWithAuthorization` **or** by `cancelAuthorization`, so `authorizationState == true` alone proves only "this authorization can never be used again", not "money moved". The chain reader therefore does three reads when the state is `true`: (1) `authorizationState` at block N; (2) an `eth_getLogs` for USDC's `AuthorizationUsed(authorizer, nonce)` and `AuthorizationCanceled(authorizer, nonce)` events (both fields are indexed; verified on Base Sepolia USDC), searched from the block the purchase started in, in windows of 100 blocks because public RPCs reject larger ranges; (3) for a `used` event, the receipt of that transaction, checking it holds a USDC `Transfer(from=buyer, to=payTo, value=amount)` log. Decision table: `true` + `used` event + matching `Transfer` → `SETTLED` with `settlement_tx` set to that transaction (the demo now gets a real tx link even in scenario B); `true` + `canceled` event → `PAYMENT_FAILED` (proven: nothing can move; only the buyer key can cancel, which PayGuard never does); `true` but no event found or `Transfer` mismatch → the row **stays `SETTLEMENT_UNKNOWN`** with a finding saying "nonce consumed, transfer unproven; do not retry; human review", no resend (a consumed nonce cannot be resent), and the duplicate guard keeps blocking retries; `false` with block timestamp beyond `validBefore + 30 s` → `PAYMENT_FAILED` (proven finding); `false` and still valid → **one** resend of the identical stored header with an 8 s timeout, recorded as `resend` evidence and classified by `classify_outcome` (never re-entering reconcile); if that did not settle, **one more** poll, then stop. The `PAYMENT-REQUIRED.error` text from a 402 (for example `invalid_exact_evm_nonce_already_used`) is recorded but never decides money. The chain reader is injectable through `deps.chain_reader` so tests use fakes; the default is `chain.authorization_state`, which runs the blocking web3 calls in a thread.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4886,9 +4929,9 @@ git commit -m "feat(sellers): after-settle stall hook gated on /research-slow on
 ```python
 import time
 
-from billguard.chain import ChainState
-from billguard.purchase import purchase
-from billguard.reconcile import reconcile
+from payguard.chain import ChainState
+from payguard.purchase import purchase
+from payguard.reconcile import reconcile
 from tests.conftest import FakeSeller
 
 TX = "0x" + "c1" * 32
@@ -5043,9 +5086,9 @@ async def test_reconcile_is_a_noop_on_non_unknown_rows(deps, seller):
 - [ ] **Step 2: Run and see failures**
 
 Run: `uv run pytest tests/test_reconcile.py -q`
-Expected: `ModuleNotFoundError: No module named 'billguard.chain'`
+Expected: `ModuleNotFoundError: No module named 'payguard.chain'`
 
-- [ ] **Step 3: Write `billguard/chain.py`**
+- [ ] **Step 3: Write `payguard/chain.py`**
 
 ```python
 """EIP-3009 settlement proof on the USDC contract (design §5, Appendix B.20). Chain time, not local time (S5).
@@ -5068,7 +5111,7 @@ from functools import lru_cache
 from web3 import Web3
 from x402.mechanisms.evm.constants import AUTHORIZATION_STATE_ABI
 
-from billguard.registry import MAINNET, SEPOLIA, USDC
+from payguard.registry import MAINNET, SEPOLIA, USDC
 
 RPC_ENV = {SEPOLIA: ("RPC_URL_SEPOLIA", "https://sepolia.base.org"), MAINNET: ("RPC_URL_MAINNET", "https://mainnet.base.org")}
 BLOCK_TIME_S = 2.0  # Base
@@ -5150,7 +5193,7 @@ async def authorization_state(network: str, from_addr: str, nonce: str, pay_to: 
     return await asyncio.to_thread(_read, network, from_addr, nonce, pay_to, value_minor, since_ts)
 ```
 
-- [ ] **Step 4: Replace `billguard/reconcile.py`**
+- [ ] **Step 4: Replace `payguard/reconcile.py`**
 
 ```python
 """Design §5 reconciliation for SETTLEMENT_UNKNOWN rows. Never creates a new payment.
@@ -5170,10 +5213,10 @@ import logging
 import time
 from typing import Any
 
-from billguard import chain
-from billguard.chain import ChainState
-from billguard.models import EvidenceKind, FindingCode, NextAction, PaymentStatus, Purchase, history_entry
-from billguard.outcome import classify_outcome, send_paid_request
+from payguard import chain
+from payguard.chain import ChainState
+from payguard.models import EvidenceKind, FindingCode, NextAction, PaymentStatus, Purchase, history_entry
+from payguard.outcome import classify_outcome, send_paid_request
 
 log = logging.getLogger(__name__)
 P = PaymentStatus
@@ -5317,18 +5360,18 @@ Expected: all pass. `tests/conftest.py` defaults `chain_reader` to `never_used` 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add billguard/chain.py billguard/reconcile.py tests/test_reconcile.py
+git add payguard/chain.py payguard/reconcile.py tests/test_reconcile.py
 git commit -m "feat(reconcile): authorizationState poll, single identical resend, block-timestamp PAYMENT_FAILED"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_reconcile.py -q` → Expected: `passed`, 0 failed
 - Run: `uv run pytest -q` → Expected: all pass, no network access (run with Wi-Fi off once to prove it)
-- Run: `grep -c 'send_paid_request(' billguard/reconcile.py` → Expected: `1` (exactly one call; the import line has no parenthesis)
-- Run: `grep -c 'time.time()' billguard/reconcile.py` → Expected: `0` (chain time decides, not the local clock)
-- Run: `grep -c 'create_payment_payload' billguard/reconcile.py` → Expected: `0` (never a new payment)
-- Run: `grep -c 'AuthorizationUsed\|AuthorizationCanceled' billguard/chain.py` → Expected: `2` or more (settlement is proven by events, not by `authorizationState` alone)
-- Run: `grep -c 'LOG_WINDOW = 100' billguard/chain.py` → Expected: `1`
+- Run: `grep -c 'send_paid_request(' payguard/reconcile.py` → Expected: `1` (exactly one call; the import line has no parenthesis)
+- Run: `grep -c 'time.time()' payguard/reconcile.py` → Expected: `0` (chain time decides, not the local clock)
+- Run: `grep -c 'create_payment_payload' payguard/reconcile.py` → Expected: `0` (never a new payment)
+- Run: `grep -c 'AuthorizationUsed\|AuthorizationCanceled' payguard/chain.py` → Expected: `2` or more (settlement is proven by events, not by `authorizationState` alone)
+- Run: `grep -c 'LOG_WINDOW = 100' payguard/chain.py` → Expected: `1`
 
 **Manual Sepolia check:** Task 5.3.
 
@@ -5340,7 +5383,7 @@ git commit -m "feat(reconcile): authorizationState poll, single identical resend
 **§7 tests covered:** the manual "one Sepolia run per scenario" for scenario B.
 
 **Files:**
-- Create: `docs/billguard/demo/backup-video.md` (where the recording lives and what it shows)
+- Create: `docs/pay-guard/demo/backup-video.md` (where the recording lives and what it shows)
 
 **Implementer brief (operator task):** Prove the full scenario B end to end on Sepolia through Claude Desktop, then record the screen for the fallback.
 
@@ -5356,11 +5399,11 @@ Expected: either the same intent ID → same `purchase_id`, `DUPLICATE_SUSPECTED
 
 - [ ] **Step 3: Record the backup video**
 
-Record steps 1–2 plus one report purchase and one convert purchase (QuickTime screen recording). Save outside the repo (for example `~/Movies/billguard-backup.mov`) and write its path and timestamps into `docs/billguard/demo/backup-video.md`:
+Record steps 1–2 plus one report purchase and one convert purchase (QuickTime screen recording). Save outside the repo (for example `~/Movies/payguard-backup.mov`) and write its path and timestamps into `docs/pay-guard/demo/backup-video.md`:
 ```markdown
 # Backup video
 
-Path: ~/Movies/billguard-backup.mov (recorded <date time>, after M5)
+Path: ~/Movies/payguard-backup.mov (recorded <date time>, after M5)
 Timestamps: 0:00 smoke_sellers, 0:40 report VERIFIED, 1:20 research SETTLEMENT_UNKNOWN→SETTLED+PAID_NO_DELIVERY, 2:10 "try again" DUPLICATE_SUSPECTED, 2:40 convert FULFILLMENT_FAILED, 3:10 list_findings
 Play when: facilitator or RPC is down during the live demo (design §10).
 ```
@@ -5368,13 +5411,13 @@ Play when: facilitator or RPC is down during the live demo (design §10).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/billguard/demo/backup-video.md
+git add docs/pay-guard/demo/backup-video.md
 git commit -m "docs(demo): backup video location and timestamps"
 ```
 
 **Exit criteria (auto):**
-- Run: `grep -c '^Path:' docs/billguard/demo/backup-video.md` → Expected: `1`
-- Run: `test -f "$(grep '^Path:' docs/billguard/demo/backup-video.md | sed -E 's/^Path: *([^ ]+).*/\1/' | sed "s#^~#$HOME#")" && echo ok` → Expected: `ok` (the recording exists on disk)
+- Run: `grep -c '^Path:' docs/pay-guard/demo/backup-video.md` → Expected: `1`
+- Run: `test -f "$(grep '^Path:' docs/pay-guard/demo/backup-video.md | sed -E 's/^Path: *([^ ]+).*/\1/' | sed "s#^~#$HOME#")" && echo ok` → Expected: `ok` (the recording exists on disk)
 
 ### Task 5.4: End-to-end scenario B test (merge gate for M3 + M5) `[W-RECONCILE]`
 
@@ -5392,8 +5435,8 @@ git commit -m "docs(demo): backup video location and timestamps"
 ```python
 import time
 
-from billguard.chain import ChainState
-from billguard.purchase import purchase
+from payguard.chain import ChainState
+from payguard.purchase import purchase
 from tests.conftest import FakeSeller
 
 
@@ -5465,19 +5508,19 @@ git commit -m "test: scenario B end to end across guard and reconcile"
 
 ## Milestone M6 — Supabase flip `[W-SUPABASE]`
 
-**Timebox:** 45 min, hard. **Cut rule (§8.6, S10):** if M5 landed after 03:00, skip M6 entirely (it becomes M8.3). If the 45 min elapse without the step-5 checkpoint passing on `BILLGUARD_STORE=supabase`, set it back to `sqlite` and move on; nothing else changes.
-**Checkpoint (§8.6):** the step-5 checkpoint (scenario B) passes with `BILLGUARD_STORE=supabase`.
+**Timebox:** 45 min, hard. **Cut rule (§8.6, S10):** if M5 landed after 03:00, skip M6 entirely (it becomes M8.3). If the 45 min elapse without the step-5 checkpoint passing on `PAYGUARD_STORE=supabase`, set it back to `sqlite` and move on; nothing else changes.
+**Checkpoint (§8.6):** the step-5 checkpoint (scenario B) passes with `PAYGUARD_STORE=supabase`.
 
 ### Task 6.1: `store/supabase.py`, schema, env-gated tests `[W-SUPABASE]`
 
-**Maps to:** F13 (Supabase backend behind the Repository protocol, selected by `BILLGUARD_STORE`), design §1 "flip to Supabase once steps 1–5 pass", §3 "supabase-py upsert(ignore_duplicates=True) returns empty data on conflict, so it is followed by a select", §2 "supabase-py is synchronous; blocking calls are acceptable".
+**Maps to:** F13 (Supabase backend behind the Repository protocol, selected by `PAYGUARD_STORE`), design §1 "flip to Supabase once steps 1–5 pass", §3 "supabase-py upsert(ignore_duplicates=True) returns empty data on conflict, so it is followed by a select", §2 "supabase-py is synchronous; blocking calls are acceptable".
 **Timebox:** 45 min.
 **SDK calls:** supabase-py `create_client(url, key)`, `table().upsert(..., on_conflict=..., ignore_duplicates=True)`, `.update().eq().eq()`, `.in_()`, `.is_('resolved_at','null')`; `postgrest.exceptions.APIError`.
 **§7 tests covered:** the store suite re-run against Supabase (env-gated).
 
 **Files:**
-- Create: `billguard/store/supabase.py`, `supabase/schema.sql`
-- Modify: `billguard/store/__init__.py` (already has the `supabase` branch; only confirm the import name)
+- Create: `payguard/store/supabase.py`, `supabase/schema.sql`
+- Modify: `payguard/store/__init__.py` (already has the `supabase` branch; only confirm the import name)
 - Test: `tests/test_store_supabase.py` (skipped unless `SUPABASE_URL` and `SUPABASE_SERVICE_KEY` are set)
 
 **Implementer brief:** Implement the same `Repository` protocol over supabase-py (synchronous client; blocking in async handlers is accepted for the demo). Compare-and-set is `update(...).eq("purchase_id", id).eq("payment_status", expected)` and succeeds iff exactly one row comes back. History append is read-modify-write under the same CAS predicate. `create_purchase` uses `upsert(..., ignore_duplicates=True)` followed by a select: empty data means the key already existed → `DuplicateKeyError`. Amounts are integers; `args`, `history`, `evidence_ids`, `safe_next_actions` and evidence `payload` are `jsonb`. Keep logging to stderr (supabase-py logs are already routed by `configure_logging`).
@@ -5545,8 +5588,8 @@ import uuid
 
 import pytest
 
-from billguard.models import FulfillmentStatus, PaymentStatus, Purchase, history_entry
-from billguard.store.base import DuplicateKeyError
+from payguard.models import FulfillmentStatus, PaymentStatus, Purchase, history_entry
+from payguard.store.base import DuplicateKeyError
 
 pytestmark = pytest.mark.skipif(not (os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_SERVICE_KEY")),
                                 reason="SUPABASE_URL/SUPABASE_SERVICE_KEY not set")
@@ -5554,7 +5597,7 @@ pytestmark = pytest.mark.skipif(not (os.environ.get("SUPABASE_URL") and os.envir
 
 @pytest.fixture
 def repo():
-    from billguard.store.supabase import SupabaseRepository
+    from payguard.store.supabase import SupabaseRepository
 
     return SupabaseRepository.from_env()
 
@@ -5595,7 +5638,7 @@ def test_create_cas_spent_findings_reset(repo, principal):
     assert repo.reset(principal) == {"purchases": 1, "evidence": 1, "findings": 1}
 ```
 
-- [ ] **Step 3: Write `billguard/store/supabase.py`**
+- [ ] **Step 3: Write `payguard/store/supabase.py`**
 
 ```python
 """Supabase repository (design §1: flipped on after step 5). supabase-py is synchronous; acceptable for the demo."""
@@ -5607,7 +5650,7 @@ from typing import Any
 from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
-from billguard.models import (
+from payguard.models import (
     BUDGET_STATES,
     IN_FLIGHT,
     Evidence,
@@ -5619,7 +5662,7 @@ from billguard.models import (
     new_id,
     now,
 )
-from billguard.store.base import DuplicateKeyError
+from payguard.store.base import DuplicateKeyError
 
 PROTECTED_COLS = {"purchase_id", "payment_status", "history", "principal_id"}
 
@@ -5804,22 +5847,22 @@ class SupabaseRepository:
 Run: `SUPABASE_URL=... SUPABASE_SERVICE_KEY=... uv run pytest tests/test_store_supabase.py -q`
 Expected: 1 passed.
 
-Set `BILLGUARD_STORE=supabase` in `.env`, restart Claude Desktop, run `uv run python scripts/reset_demo.py --yes`, then repeat Task 5.3 steps 1–2.
+Set `PAYGUARD_STORE=supabase` in `.env`, restart Claude Desktop, run `uv run python scripts/reset_demo.py --yes`, then repeat Task 5.3 steps 1–2.
 Expected: identical results; the Supabase table editor shows the `purchases`, `evidence` and `findings` rows appearing live.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add billguard/store/supabase.py supabase/schema.sql tests/test_store_supabase.py
+git add payguard/store/supabase.py supabase/schema.sql tests/test_store_supabase.py
 git commit -m "feat(store): Supabase repository behind the same protocol; env-gated test"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest -q` → Expected: all pass, `test_store_supabase.py` reported as skipped when env is unset
 - Run: `SUPABASE_URL=... SUPABASE_SERVICE_KEY=... uv run pytest tests/test_store_supabase.py -q` → Expected: `1 passed`
-- Run: `uv run python -c "from billguard.store.supabase import SupabaseRepository; print('import ok')"` → Expected: `import ok`
+- Run: `uv run python -c "from payguard.store.supabase import SupabaseRepository; print('import ok')"` → Expected: `import ok`
 
-**Manual check (M6 checkpoint):** scenario B passes with `BILLGUARD_STORE=supabase`; `list_findings` from a **fresh** Claude Desktop session (quit and relaunch) returns the `PAID_NO_DELIVERY` and `DUPLICATE_SUSPECTED` findings (metric 6). If the 45 min are gone, set `BILLGUARD_STORE=sqlite` back and continue.
+**Manual check (M6 checkpoint):** scenario B passes with `PAYGUARD_STORE=supabase`; `list_findings` from a **fresh** Claude Desktop session (quit and relaunch) returns the `PAID_NO_DELIVERY` and `DUPLICATE_SUSPECTED` findings (metric 6). If the 45 min are gone, set `PAYGUARD_STORE=sqlite` back and continue.
 
 ### Milestone M6 — Checkpoint and manual verification
 
@@ -5844,7 +5887,7 @@ git commit -m "feat(store): Supabase repository behind the same protocol; env-ga
 **§7 tests covered:** the schema test (still no force/retry param with the fourth tool present).
 
 **Files:**
-- Modify: `billguard/server.py` (add the env-gated tool block only), `.env` (operator), `.env.example` (document)
+- Modify: `payguard/server.py` (add the env-gated tool block only), `.env` (operator), `.env.example` (document)
 - Test: `tests/test_schema.py` is unchanged; add a gated check in `tests/test_bazaar_tool.py`
 
 **Implementer brief:** The registry already adds a `bazaar` service when `BAZAAR_URL` is set (Task 2.3). Add the matching paid tool to `server.py`, registered only when the env is present, with the same `(purchase_intent_id, task_id)` shape and no force/retry parameter. The tool takes no service args: the probe picked a resource URL that works as a plain GET. The mainnet buyer key pays USDC only; the facilitator pays gas. The registry pins `eip155:8453`, so the Sepolia key can never be used here.
@@ -5853,7 +5896,7 @@ git commit -m "feat(store): Supabase repository behind the same protocol; env-ga
 
 Run: `uv run python scripts/bazaar_probe.py --pick <winner_url_from_M1>` and paste the five printed lines into `.env`.
 
-- [ ] **Step 2: Add the tool to `billguard/server.py`** (after `convert_document`)
+- [ ] **Step 2: Add the tool to `payguard/server.py`** (after `convert_document`)
 
 ```python
 # ---- fourth paid tool: a public Bazaar seller on Base mainnet (design §4, §8.7). Registered iff BAZAAR_URL is set. ----
@@ -5862,7 +5905,7 @@ if os.environ.get("BAZAAR_URL"):
 
     @mcp.tool(name=_bazaar_tool_name,
               description=f"Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar ({os.environ['BAZAAR_URL']}); "
-                          f"price {int(os.environ['BAZAAR_PRICE_MINOR']) / 1_000_000:.4f} USDC. This seller has never heard of BillGuard. {REUSE}")
+                          f"price {int(os.environ['BAZAAR_PRICE_MINOR']) / 1_000_000:.4f} USDC. This seller has never heard of PayGuard. {REUSE}")
     async def get_public_data(purchase_intent_id: str, task_id: str | None = None) -> dict[str, Any]:
         return await purchase(get_deps(), "bazaar", {}, purchase_intent_id, task_id)
 ```
@@ -5879,7 +5922,7 @@ import pytest
 
 @pytest.mark.skipif(not os.environ.get("BAZAAR_URL"), reason="BAZAAR_URL not set")
 async def test_bazaar_tool_registered_without_force_param():
-    import billguard.server as srv
+    import payguard.server as srv
 
     importlib.reload(srv)
     tools = await srv.mcp.get_tools()
@@ -5897,14 +5940,14 @@ Expected: `SETTLED`, `fulfillment_status: VERIFIED` (validators `non_empty`, `co
 - [ ] **Step 5: Commit**
 
 ```bash
-git add billguard/server.py tests/test_bazaar_tool.py .env.example
+git add payguard/server.py tests/test_bazaar_tool.py .env.example
 git commit -m "feat(server): env-gated fourth paid tool for the Bazaar seller on Base mainnet"
 ```
 
 **Exit criteria (auto):**
 - Run: `BAZAAR_URL=https://example.invalid/x BAZAAR_PRICE_MINOR=1000 uv run pytest tests/test_bazaar_tool.py tests/test_schema.py -q` → Expected: all pass
 - Run: `uv run pytest -q` → Expected: all pass (bazaar test skipped when env unset)
-- Run: `grep -c "'bazaard'\|\"bazaard\"" billguard/server.py` → Expected: `0` (sanity: service id is `bazaar`)
+- Run: `grep -c "'bazaard'\|\"bazaard\"" payguard/server.py` → Expected: `0` (sanity: service id is `bazaar`)
 
 **Manual mainnet check (M7 checkpoint, metric 7):** step 4 above, plus the basescan link shows a USDC transfer from the mainnet buyer to the seller's `payTo`.
 
@@ -5915,7 +5958,7 @@ git commit -m "feat(server): env-gated fourth paid tool for the Bazaar seller on
 **SDK calls:** none. **§7 tests covered:** none (demo material).
 
 **Files:**
-- Create: `docs/billguard/demo/bazaar-fallback.md`
+- Create: `docs/pay-guard/demo/bazaar-fallback.md`
 
 **Implementer brief (operator task):** Write the one-page fallback for demo step 8 so the Bazaar beat survives a mainnet outage: the probe listing, the one sentence that explains the code path is identical, and the hour-1 smoke receipt.
 
@@ -5927,7 +5970,7 @@ git commit -m "feat(server): env-gated fourth paid tool for the Bazaar seller on
 Use when the mainnet purchase cannot be shown live.
 
 1. Show `uv run python scripts/bazaar_probe.py` output (paste the latest run below).
-2. Say: "These are strangers' x402 endpoints discovered through the CDP Bazaar. BillGuard registers one with two validators and buys through the SAME code path you just saw on Sepolia: quote → mandate → sign → send → verify. Nothing in the seller changes."
+2. Say: "These are strangers' x402 endpoints discovered through the CDP Bazaar. PayGuard registers one with two validators and buys through the SAME code path you just saw on Sepolia: quote → mandate → sign → send → verify. Nothing in the seller changes."
 3. If a smoke-test receipt exists from hour 1, show it (paste below).
 
 ## Latest probe output
@@ -5940,17 +5983,17 @@ Use when the mainnet purchase cannot be shown live.
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/billguard/demo/bazaar-fallback.md
+git add docs/pay-guard/demo/bazaar-fallback.md
 git commit -m "docs(demo): written fallback for the Bazaar beat"
 ```
 
 **Exit criteria (auto):**
-- Run: `test -f docs/billguard/demo/bazaar-fallback.md && echo ok` → Expected: `ok`
-- Run: `grep -c '<paste>' docs/billguard/demo/bazaar-fallback.md` → Expected: `0` (both sections filled in)
+- Run: `test -f docs/pay-guard/demo/bazaar-fallback.md && echo ok` → Expected: `ok`
+- Run: `grep -c '<paste>' docs/pay-guard/demo/bazaar-fallback.md` → Expected: `0` (both sections filled in)
 
 ### Milestone M7 — Checkpoint and manual verification
 
-- [ ] Either a live mainnet purchase shows `SETTLED` + `VERIFIED` with a basescan link, or `docs/billguard/demo/bazaar-fallback.md` is filled in.
+- [ ] Either a live mainnet purchase shows `SETTLED` + `VERIFIED` with a basescan link, or `docs/pay-guard/demo/bazaar-fallback.md` is filled in.
 - [ ] `list_services` in Claude Desktop lists five services including `bazaar` on `eip155:8453`.
 - [ ] The paid-tool schema still has no force/retry parameter (`uv run pytest tests/test_schema.py -q`).
 - [ ] `uv run python scripts/reset_demo.py --yes`.
@@ -5988,10 +6031,10 @@ import json
 import sys
 import time
 
-from billguard.deps import get_deps
-from billguard.models import IN_FLIGHT, FindingCode, PaymentStatus, Purchase
-from billguard.purchase import CALL_BUDGET_S, run_from_quote
-from billguard.response import build_response
+from payguard.deps import get_deps
+from payguard.models import IN_FLIGHT, FindingCode, PaymentStatus, Purchase
+from payguard.purchase import CALL_BUDGET_S, run_from_quote
+from payguard.response import build_response
 
 
 async def main() -> int:
@@ -6039,36 +6082,36 @@ git commit -m "feat(scripts): approve_retry creates a human-approved superseding
 ```
 
 **Exit criteria (auto):**
-- Run: `grep -rn 'approve_retry' billguard/ | wc -l | tr -d ' '` → Expected: `0` (still no MCP path)
+- Run: `grep -rn 'approve_retry' payguard/ | wc -l | tr -d ' '` → Expected: `0` (still no MCP path)
 - Run: `uv run pytest tests/test_schema.py -q` → Expected: pass
 - Run: `uv run python scripts/approve_retry.py does-not-exist; echo $?` → Expected: `purchase not found` then `1`
 
 ### Task 8.2: `--naive-retry` contrast rehearsal `[W-STRETCH]`
 
 **Maps to:** design §8.8, §9 step 2 "optionally run --naive-retry".
-**Timebox:** 10 min. **Files:** `docs/billguard/demo/checklist.md` (append the screenshot path). **SDK calls:** `x402HttpxClient` via the existing script. **§7 tests covered:** none (demo contrast).
+**Timebox:** 10 min. **Files:** `docs/pay-guard/demo/checklist.md` (append the screenshot path). **SDK calls:** `x402HttpxClient` via the existing script. **§7 tests covered:** none (demo contrast).
 
 **Implementer brief (operator task):** Produce the "bare SDK pays twice" contrast once, capture it, and decide whether it runs live or as a screenshot.
 
 - [ ] Run `uv run python scripts/smoke_sellers.py --naive-retry` with the stall hook live. Expected: two `attempt N: PaymentError after paying: ...` lines about 60 s apart and **two** 0.75 USDC transfers on the explorer. Note the elapsed time; decide whether the 2-minute beat fits the 6-minute demo (default: show the explorer screenshot instead of running it live).
-- [ ] Save the screenshot path in `docs/billguard/demo/checklist.md` (Task 9.1) under a line starting with `Naive-retry screenshot:`.
+- [ ] Save the screenshot path in `docs/pay-guard/demo/checklist.md` (Task 9.1) under a line starting with `Naive-retry screenshot:`.
 
 **Exit criteria (auto):**
-- Run: `grep -c '^Naive-retry screenshot:' docs/billguard/demo/checklist.md` → Expected: `1`
+- Run: `grep -c '^Naive-retry screenshot:' docs/pay-guard/demo/checklist.md` → Expected: `1`
 
 ### Task 8.3: Supabase table view as the live ledger `[W-STRETCH]`
 
 **Maps to:** design §1 "the table view is the live-ledger stretch", §8.8. Only if M6 landed.
-**Timebox:** 10 min. **Files:** `docs/billguard/demo/checklist.md` (append the dashboard URL). **SDK calls:** none. **§7 tests covered:** none.
+**Timebox:** 10 min. **Files:** `docs/pay-guard/demo/checklist.md` (append the dashboard URL). **SDK calls:** none. **§7 tests covered:** none.
 
 **Implementer brief (operator task):** Prepare the Supabase table view that acts as the live ledger on the second screen during the demo.
 
-- [ ] In the Supabase dashboard open `purchases` sorted by `created_at desc` with columns `service_id, payment_status, fulfillment_status, authorized_amount_minor, settlement_tx`; keep that tab on the second screen during the demo. Record the URL in `docs/billguard/demo/checklist.md` under a line starting with `Ledger view:`.
+- [ ] In the Supabase dashboard open `purchases` sorted by `created_at desc` with columns `service_id, payment_status, fulfillment_status, authorized_amount_minor, settlement_tx`; keep that tab on the second screen during the demo. Record the URL in `docs/pay-guard/demo/checklist.md` under a line starting with `Ledger view:`.
 
 **Exit criteria (auto):**
-- Run: `grep -c '^Ledger view: https://' docs/billguard/demo/checklist.md` → Expected: `1`
+- Run: `grep -c '^Ledger view: https://' docs/pay-guard/demo/checklist.md` → Expected: `1`
 
-### Task 8.4: Publish the BillGuard MCP server on Manufact `[W-STRETCH]`
+### Task 8.4: Publish the PayGuard MCP server on Manufact `[W-STRETCH]`
 
 **Maps to:** none in the PRD (scope addition recorded in Appendix B.15); demo step 8/9 can mention "installable from Manufact". Does not change M0–M7: new files only, no new tool, no payment path.
 **Timebox:** 30 min hard. **Cut:** drop entirely; nothing depends on it.
@@ -6076,14 +6119,14 @@ git commit -m "feat(scripts): approve_retry creates a human-approved superseding
 **§7 tests covered:** none (the schema test keeps guarding the published tool list).
 
 **Files:**
-- Create: `scripts/export_tool_schema.py`, `mcp-tools.json` (generated), `docs/billguard/demo/manufact.md`
+- Create: `scripts/export_tool_schema.py`, `mcp-tools.json` (generated), `docs/pay-guard/demo/manufact.md`
 - Modify: `README.md` (an "Install from Manufact" section)
 
-**Implementer brief:** Make the server installable from Manufact's MCP listing without weakening anything. The listing must launch the same stdio command Claude Desktop uses (`uv run --directory <repo> python -m billguard.server`), declare the env variables by NAME only (never a value; keys stay in the operator's `.env`), and advertise exactly the tools the schema test allows. Manufact's manifest format is whatever its current docs say: step 1 is to read them and write the format down; steps 2–4 are fixed regardless of that format. If Manufact's flow needs a hosted (non-stdio) server, stop and report `BLOCKED`: BillGuard is stdio-only for the demo.
+**Implementer brief:** Make the server installable from Manufact's MCP listing without weakening anything. The listing must launch the same stdio command Claude Desktop uses (`uv run --directory <repo> python -m payguard.server`), declare the env variables by NAME only (never a value; keys stay in the operator's `.env`), and advertise exactly the tools the schema test allows. Manufact's manifest format is whatever its current docs say: step 1 is to read them and write the format down; steps 2–4 are fixed regardless of that format. If Manufact's flow needs a hosted (non-stdio) server, stop and report `BLOCKED`: PayGuard is stdio-only for the demo.
 
 - [ ] **Step 1: Read Manufact's publishing docs and record the format**
 
-Create `docs/billguard/demo/manufact.md` with these headings and fill the first two from the docs: `## Manifest format (from docs, <date>)`, `## Publish command`, `## Listing:` (filled in step 4), `## Verified install`.
+Create `docs/pay-guard/demo/manufact.md` with these headings and fill the first two from the docs: `## Manifest format (from docs, <date>)`, `## Publish command`, `## Listing:` (filled in step 4), `## Verified install`.
 
 - [ ] **Step 2: Export the tool schema the listing will advertise**
 
@@ -6098,14 +6141,14 @@ import sys
 
 
 async def main() -> int:
-    from billguard.server import mcp
+    from payguard.server import mcp
 
     tools = await mcp.get_tools()
     out = [{"name": n, "description": t.description, "parameters": t.parameters} for n, t in sorted(tools.items())]
-    json.dump({"server": "billguard", "transport": "stdio",
-               "command": ["uv", "run", "--directory", "<repo>", "python", "-m", "billguard.server"],
-               "env_names": ["BUYER_KEY_SEPOLIA", "BUYER_KEY_MAINNET", "SELLER_BASE_URL", "BILLGUARD_STORE",
-                             "BILLGUARD_POLICY", "RPC_URL_SEPOLIA", "RPC_URL_MAINNET"],
+    json.dump({"server": "payguard", "transport": "stdio",
+               "command": ["uv", "run", "--directory", "<repo>", "python", "-m", "payguard.server"],
+               "env_names": ["BUYER_KEY_SEPOLIA", "BUYER_KEY_MAINNET", "SELLER_BASE_URL", "PAYGUARD_STORE",
+                             "PAYGUARD_POLICY", "RPC_URL_SEPOLIA", "RPC_URL_MAINNET"],
                "tools": out}, sys.stdout, indent=2)
     return 0
 
@@ -6122,7 +6165,7 @@ README addition:
 ```markdown
 ## Install from Manufact
 
-Listing: <url from docs/billguard/demo/manufact.md>. The listing launches `uv run --directory <repo> python -m billguard.server` over stdio.
+Listing: <url from docs/pay-guard/demo/manufact.md>. The listing launches `uv run --directory <repo> python -m payguard.server` over stdio.
 You still need a local `.env` (see `.env.example`); the listing names the variables but never holds values.
 ```
 
@@ -6133,30 +6176,30 @@ Publish with the command from step 1. Record the listing URL under `## Listing:`
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/export_tool_schema.py mcp-tools.json docs/billguard/demo/manufact.md README.md
+git add scripts/export_tool_schema.py mcp-tools.json docs/pay-guard/demo/manufact.md README.md
 git commit -m "feat(publish): export tool schema and publish the MCP server on Manufact"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run python scripts/export_tool_schema.py | python3 -c "import json,sys; d=json.load(sys.stdin); n=[t['name'] for t in d['tools']]; assert 'approve_retry' not in n; assert not any('force' in k or 'retry' in k for t in d['tools'] for k in t['parameters'].get('properties',{})); print(len(n))"` → Expected: `8` (or `9` with `BAZAAR_URL` set)
-- Run: `grep -c '^Listing: https://' docs/billguard/demo/manufact.md` → Expected: `1`
-- Run: `grep -ciE '0x[0-9a-f]{64}' mcp-tools.json docs/billguard/demo/manufact.md README.md` → Expected: all `0` (no key values anywhere)
+- Run: `grep -c '^Listing: https://' docs/pay-guard/demo/manufact.md` → Expected: `1`
+- Run: `grep -ciE '0x[0-9a-f]{64}' mcp-tools.json docs/pay-guard/demo/manufact.md README.md` → Expected: all `0` (no key values anywhere)
 - Run: `uv run pytest tests/test_schema.py -q` → Expected: pass
 
 **Manual check:** `list_services` works from a Claude Desktop install that came from the listing.
 
-### Task 8.5: Email the seller a dispute through Primitive, with BillGuard's evidence (human-run) `[W-STRETCH]`
+### Task 8.5: Email the seller a dispute through Primitive, with PayGuard's evidence (human-run) `[W-STRETCH]`
 
-**Maps to:** the human side of design §3's `report_to_seller` action; PRD non-goal "disputes with the seller" is respected because BillGuard arbitrates nothing: it sends the seller a documented complaint and records the thread. Scope addition (Appendix B.16). Does not change M0–M7.
+**Maps to:** the human side of design §3's `report_to_seller` action; PRD non-goal "disputes with the seller" is respected because PayGuard arbitrates nothing: it sends the seller a documented complaint and records the thread. Scope addition (Appendix B.16). Does not change M0–M7.
 **Timebox:** 40 min hard. **Cut:** keep the redacted evidence bundle and the rendered email (`--dry-run`), drop the send and the reply check.
 **SDK calls:** none from x402. Primitive HTTP API (verified from `https://www.primitive.dev/openapi.json` on 2026-10-17): base `https://api.primitive.dev/v1`; `POST /send-mail` with required `from`, `to`, `subject` and optional `body_text`, `body_html`, `attachments`, `payload_attachments`, `in_reply_to`, `references`, `wait`, `wait_timeout_ms`; `GET /sent-emails/{id}`; `GET /sent-emails/{id}/reply`; `GET /threads/{id}`; `POST /endpoints` for a reply webhook. Primitive is email infrastructure for agents, not an arbitration service: there is no "case" object, only messages and threads. (It also exposes `/x402/*` endpoints; not used here.)
 **§7 tests covered:** none; adds `tests/test_disputes.py` (bundle contents, redaction, email rendering).
 
 **Files:**
-- Create: `billguard/disputes.py`, `scripts/file_dispute.py`, `tests/test_disputes.py`
-- Modify: `billguard/models.py` (one enum member: `EvidenceKind.DISPUTE = "dispute"`), `billguard/registry.py` (optional `contact_email` field on `Service`, filled from `SELLER_CONTACT_EMAIL` for the four demo services), `.env.example` (`PRIMITIVE_API_KEY=`, `PRIMITIVE_FROM=`, `SELLER_CONTACT_EMAIL=`)
+- Create: `payguard/disputes.py`, `scripts/file_dispute.py`, `tests/test_disputes.py`
+- Modify: `payguard/models.py` (one enum member: `EvidenceKind.DISPUTE = "dispute"`), `payguard/registry.py` (optional `contact_email` field on `Service`, filled from `SELLER_CONTACT_EMAIL` for the four demo services), `.env.example` (`PRIMITIVE_API_KEY=`, `PRIMITIVE_FROM=`, `SELLER_CONTACT_EMAIL=`)
 
-**Implementer brief:** Give the operator a one-command way to send the seller a dispute email for a proven finding (`PAID_NO_DELIVERY`, `FULFILLMENT_FAILED`, `PRICE_MISMATCH`), with BillGuard's evidence attached, and to pull the seller's reply back into the ledger. Three parts. (1) A pure bundle builder that collects the purchase, its unresolved findings and the evidence rows they reference, and **redacts the signed authorization** (`payment_payload.header`, `signature`): it is a bearer token and must never leave the machine. (2) A renderer that turns the bundle into a short plain-text email (what was bought, what was paid, the tx link, what was delivered, which check failed, what BillGuard asks the seller to do) and attaches the bundle as `billguard-evidence.json`. (3) A script: `--dry-run` prints the email and bundle; otherwise `POST /send-mail` from `PRIMITIVE_FROM` to the service's `contact_email`, store the sent-email id, thread id and recipient as `dispute` evidence and append `dispute_sent` to history; `--check <purchase_id>` calls `GET /sent-emails/{id}/reply`, and if a reply exists stores it as `dispute` evidence (`direction: inbound`) and appends `dispute_reply`. Operator-only: **no MCP tool may call any of this** (the schema test must keep passing); no money moves. For the demo, `SELLER_CONTACT_EMAIL` is an inbox you control so the reply beat can be shown.
+**Implementer brief:** Give the operator a one-command way to send the seller a dispute email for a proven finding (`PAID_NO_DELIVERY`, `FULFILLMENT_FAILED`, `PRICE_MISMATCH`), with PayGuard's evidence attached, and to pull the seller's reply back into the ledger. Three parts. (1) A pure bundle builder that collects the purchase, its unresolved findings and the evidence rows they reference, and **redacts the signed authorization** (`payment_payload.header`, `signature`): it is a bearer token and must never leave the machine. (2) A renderer that turns the bundle into a short plain-text email (what was bought, what was paid, the tx link, what was delivered, which check failed, what PayGuard asks the seller to do) and attaches the bundle as `payguard-evidence.json`. (3) A script: `--dry-run` prints the email and bundle; otherwise `POST /send-mail` from `PRIMITIVE_FROM` to the service's `contact_email`, store the sent-email id, thread id and recipient as `dispute` evidence and append `dispute_sent` to history; `--check <purchase_id>` calls `GET /sent-emails/{id}/reply`, and if a reply exists stores it as `dispute` evidence (`direction: inbound`) and appends `dispute_reply`. Operator-only: **no MCP tool may call any of this** (the schema test must keep passing); no money moves. For the demo, `SELLER_CONTACT_EMAIL` is an inbox you control so the reply beat can be shown.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6166,8 +6209,8 @@ import json
 
 import pytest
 
-from billguard.disputes import build_bundle, render_email
-from billguard.purchase import purchase
+from payguard.disputes import build_bundle, render_email
+from payguard.purchase import purchase
 
 
 async def test_bundle_has_findings_and_evidence_and_redacts_signature(deps, seller):
@@ -6203,15 +6246,15 @@ async def test_bundle_refuses_rows_without_unresolved_findings(deps, seller):
 - [ ] **Step 2: Run and see it fail**
 
 Run: `uv run pytest tests/test_disputes.py -q`
-Expected: `ModuleNotFoundError: No module named 'billguard.disputes'`
+Expected: `ModuleNotFoundError: No module named 'payguard.disputes'`
 
-- [ ] **Step 3: Enum member, registry contact field, and `billguard/disputes.py`**
+- [ ] **Step 3: Enum member, registry contact field, and `payguard/disputes.py`**
 
-In `billguard/models.py`, inside `EvidenceKind`, add `DISPUTE = "dispute"`.
+In `payguard/models.py`, inside `EvidenceKind`, add `DISPUTE = "dispute"`.
 
-In `billguard/registry.py`, add to `Service` (after `timeout_s`): `contact_email: str | None = None`, and in `load_registry` set `contact_email=os.environ.get("SELLER_CONTACT_EMAIL")` on the four demo services (`dataclasses.replace` after construction is fine).
+In `payguard/registry.py`, add to `Service` (after `timeout_s`): `contact_email: str | None = None`, and in `load_registry` set `contact_email=os.environ.get("SELLER_CONTACT_EMAIL")` on the four demo services (`dataclasses.replace` after construction is fine).
 
-`billguard/disputes.py`:
+`payguard/disputes.py`:
 ```python
 """Dispute email to the seller via Primitive (operator side of safe_next_actions.report_to_seller).
 
@@ -6228,8 +6271,8 @@ from typing import Any
 
 import httpx
 
-from billguard.models import EvidenceKind, FindingCode, history_entry
-from billguard.response import explorer_url, usdc
+from payguard.models import EvidenceKind, FindingCode, history_entry
+from payguard.response import explorer_url, usdc
 
 DISPUTABLE = {FindingCode.PAID_NO_DELIVERY, FindingCode.FULFILLMENT_FAILED, FindingCode.PRICE_MISMATCH}
 REDACT = {"header", "signature"}
@@ -6290,7 +6333,7 @@ def render_email(bundle: dict[str, Any]) -> tuple[str, str]:
         lines.append(f"  - check '{c.get('name')}' failed: expected {c.get('expected')!r}, actual {c.get('actual')!r}")
     lines += [
         "",
-        "We ask you to deliver the purchased item or refund the amount above. The attached billguard-evidence.json holds the quote, "
+        "We ask you to deliver the purchased item or refund the amount above. The attached payguard-evidence.json holds the quote, "
         "the settlement proof, the delivered artifact's hash and the failed checks. Reply to this email to resolve.",
         "",
         f"Reference: {p['purchase_id']}",
@@ -6309,7 +6352,7 @@ def send_dispute(bundle: dict[str, Any]) -> dict[str, Any]:
         "to": [to],
         "subject": subject,
         "body_text": body,
-        "attachments": [{"filename": "billguard-evidence.json", "content_type": "application/json",
+        "attachments": [{"filename": "payguard-evidence.json", "content_type": "application/json",
                          "content_base64": base64.b64encode(json.dumps(bundle, default=str).encode()).decode()}],
         "wait": True,
     }
@@ -6360,9 +6403,9 @@ import argparse
 import json
 import sys
 
-from billguard.deps import get_deps
-from billguard.disputes import build_bundle, check_reply, record_reply, record_sent, render_email, send_dispute
-from billguard.models import EvidenceKind
+from payguard.deps import get_deps
+from payguard.disputes import build_bundle, check_reply, record_reply, record_sent, render_email, send_dispute
+from payguard.models import EvidenceKind
 
 
 def main() -> int:
@@ -6402,18 +6445,18 @@ if __name__ == "__main__":
 
 Run: `uv run pytest tests/test_disputes.py tests/test_schema.py -q` → all pass.
 Run: `uv run python scripts/file_dispute.py <purchase_id_of_a_FULFILLMENT_FAILED_row> --dry-run | grep -c '"header": "<redacted>"'` → `1`.
-Live (operator, env set, `SELLER_CONTACT_EMAIL` = an inbox you control): the script prints `sent dispute id=...`; the email arrives with `billguard-evidence.json`; reply to it; `--check` prints `reply recorded as evidence ...`; `get_purchase` shows two `dispute` evidence rows and `dispute_sent`, `dispute_reply` in `history`.
+Live (operator, env set, `SELLER_CONTACT_EMAIL` = an inbox you control): the script prints `sent dispute id=...`; the email arrives with `payguard-evidence.json`; reply to it; `--check` prints `reply recorded as evidence ...`; `get_purchase` shows two `dispute` evidence rows and `dispute_sent`, `dispute_reply` in `history`.
 
 ```bash
-git add billguard/disputes.py billguard/models.py billguard/registry.py scripts/file_dispute.py tests/test_disputes.py .env.example
+git add payguard/disputes.py payguard/models.py payguard/registry.py scripts/file_dispute.py tests/test_disputes.py .env.example
 git commit -m "feat(disputes): operator-run dispute email to the seller via Primitive, evidence attached and redacted"
 ```
 
 **Exit criteria (auto):**
 - Run: `uv run pytest tests/test_disputes.py tests/test_schema.py -q` → Expected: pass
-- Run: `grep -rn 'file_dispute\|build_bundle\|send_dispute' billguard/server.py | wc -l | tr -d ' '` → Expected: `0` (no MCP path)
-- Run: `grep -c '"<redacted>"' billguard/disputes.py` → Expected: `1`
-- Run: `grep -c '/send-mail' billguard/disputes.py` → Expected: `1`
+- Run: `grep -rn 'file_dispute\|build_bundle\|send_dispute' payguard/server.py | wc -l | tr -d ' '` → Expected: `0` (no MCP path)
+- Run: `grep -c '"<redacted>"' payguard/disputes.py` → Expected: `1`
+- Run: `grep -c '/send-mail' payguard/disputes.py` → Expected: `1`
 - Run: `grep -c 'PRIMITIVE_API_KEY=$' .env.example` → Expected: `1` (name only, no value)
 
 **Manual check:** one dispute email sent for the scenario-C row, the seller's reply pulled back with `--check`, both visible in `get_purchase`.
@@ -6427,9 +6470,9 @@ git commit -m "feat(disputes): operator-run dispute email to the seller via Prim
 
 **Files:**
 - Create: `sellers_stripe/README.md`, `tests/test_stripe_seller_tool.py`
-- Modify: `billguard/registry.py` (env-gated block, `STRIPE_SELLER_*` incl. `STRIPE_SELLER_NETWORK`), `billguard/server.py` (env-gated tool block), `policy.yaml` (`stripe_seller`), `.env.example`
+- Modify: `payguard/registry.py` (env-gated block, `STRIPE_SELLER_*` incl. `STRIPE_SELLER_NETWORK`), `payguard/server.py` (env-gated tool block), `policy.yaml` (`stripe_seller`), `.env.example`
 
-**Implementer brief:** Use the Stripe sandbox you already have. Step 1 is to read Stripe's x402 docs and find the documented sandbox or test-mode path: which network a sandbox endpoint quotes (a testnet such as Base Sepolia, or mainnet) and which API version it needs. Prefer the testnet path; BillGuard's Sepolia buyer wallet and the M1 faucet USDC then cover it with no new funding. Only if the sandbox can quote nothing but mainnet, and the mainnet wallet is already funded from M7, run it on mainnet; otherwise take the cut. Probe the endpoint with the bare SDK client first and record the 402's `accepts` (scheme, network, asset, `extra.assetTransferMethod`). The registry entry pins the network the endpoint quotes (`STRIPE_SELLER_NETWORK`) and the canonical USDC for that network; if the quote is Permit2, a non-USDC asset, or a non-`exact` scheme, BillGuard rejects it `PRICE_MISMATCH` before signing and that rejection is shown instead. Nothing else in BillGuard changes.
+**Implementer brief:** Use the Stripe sandbox you already have. Step 1 is to read Stripe's x402 docs and find the documented sandbox or test-mode path: which network a sandbox endpoint quotes (a testnet such as Base Sepolia, or mainnet) and which API version it needs. Prefer the testnet path; PayGuard's Sepolia buyer wallet and the M1 faucet USDC then cover it with no new funding. Only if the sandbox can quote nothing but mainnet, and the mainnet wallet is already funded from M7, run it on mainnet; otherwise take the cut. Probe the endpoint with the bare SDK client first and record the 402's `accepts` (scheme, network, asset, `extra.assetTransferMethod`). The registry entry pins the network the endpoint quotes (`STRIPE_SELLER_NETWORK`) and the canonical USDC for that network; if the quote is Permit2, a non-USDC asset, or a non-`exact` scheme, PayGuard rejects it `PRICE_MISMATCH` before signing and that rejection is shown instead. Nothing else in PayGuard changes.
 
 - [ ] **Step 1: Read Stripe's x402 docs in your sandbox; record the sandbox path**
 
@@ -6491,7 +6534,7 @@ import pytest
 
 @pytest.mark.skipif(not os.environ.get("STRIPE_SELLER_URL"), reason="STRIPE_SELLER_URL not set")
 async def test_stripe_seller_tool_registered_without_force_param():
-    import billguard.server as srv
+    import payguard.server as srv
 
     importlib.reload(srv)
     tools = await srv.mcp.get_tools()
@@ -6504,7 +6547,7 @@ async def test_stripe_seller_tool_registered_without_force_param():
 Prompt: *"Buy from the Stripe-hosted seller, purchase intent id demo-stripe-1."* Expected: `SETTLED` + `VERIFIED` on the sandbox's network, the Stripe sandbox dashboard shows the corresponding payment record, the explorer shows the USDC transfer. If the quote is rejected `PRICE_MISMATCH`, record the `accepts` in the README and show the rejection in the demo instead.
 
 ```bash
-git add sellers_stripe/README.md billguard/registry.py billguard/server.py policy.yaml .env.example tests/test_stripe_seller_tool.py
+git add sellers_stripe/README.md payguard/registry.py payguard/server.py policy.yaml .env.example tests/test_stripe_seller_tool.py
 git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet first) bought through the same code path"
 ```
 
@@ -6512,7 +6555,7 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet firs
 - Run: `STRIPE_SELLER_URL=https://example.invalid/x STRIPE_SELLER_PRICE_MINOR=10000 uv run pytest tests/test_stripe_seller_tool.py tests/test_schema.py -q` → Expected: pass
 - Run: `uv run pytest -q` → Expected: all pass (Stripe test skipped when env unset)
 - Run: `grep -c '^## Sandbox path' sellers_stripe/README.md` → Expected: `1`
-- Run: `grep -c 'STRIPE_SELLER_NETWORK' billguard/registry.py` → Expected: `1`
+- Run: `grep -c 'STRIPE_SELLER_NETWORK' payguard/registry.py` → Expected: `1`
 
 **Manual check:** one settled sandbox purchase, or a recorded `PRICE_MISMATCH` rejection with the seller's `accepts` pasted in the README, or `## Decision: cut` with the reason.
 
@@ -6524,7 +6567,7 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet firs
 - [ ] If 8.2 ran: the two-transfer screenshot is referenced in the checklist.
 - [ ] If 8.3 ran: the ledger URL is in the checklist and the table updates during a purchase.
 - [ ] If 8.4 shipped: a Claude Desktop install from the Manufact listing lists the same tools; no key value appears in the listing.
-- [ ] If 8.5 shipped: one dispute email sent with the redacted evidence attached and the reply pulled back; `grep -rn file_dispute billguard/server.py` is empty.
+- [ ] If 8.5 shipped: one dispute email sent with the redacted evidence attached and the reply pulled back; `grep -rn file_dispute payguard/server.py` is empty.
 - [ ] If 8.6 shipped: one settled Stripe-sandbox purchase (or its recorded `PRICE_MISMATCH`, or a documented cut); the schema test is green with the extra tool.
 - [ ] `uv run python scripts/reset_demo.py --yes`.
 
@@ -6544,7 +6587,7 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet firs
 **Implementer brief (operator task):** Turn design §9 into a checklist the presenter runs top to bottom 30 minutes before the demo, with the exact commands, the 6-minute script, and the prompt to paste. The reset is the last command. The dry run includes a cold-start Claude Desktop session with the product spec's §8 prompt pasted verbatim (the spec is the operator's `writing-block` file, outside this repo) to prove the guard does not depend on Claude reusing intent ids.
 
 **Files:**
-- Create: `docs/billguard/demo/checklist.md`
+- Create: `docs/pay-guard/demo/checklist.md`
 
 - [ ] **Step 1: Write the checklist**
 
@@ -6552,21 +6595,21 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet firs
 # Pre-demo checklist (run top to bottom, T-30 min)
 
 ## Environment
-- [ ] `.env` present; `BILLGUARD_STORE` set to the store that passed the last rehearsal (sqlite unless M6 passed)
+- [ ] `.env` present; `PAYGUARD_STORE` set to the store that passed the last rehearsal (sqlite unless M6 passed)
 - [ ] `uv run python scripts/setup_wallets.py --check` → CHECK OK (buyer Sepolia USDC ≥ 4; mainnet USDC ≥ Bazaar price)
 - [ ] Seller up: `uv run uvicorn sellers.app:app --port 8402`; `curl -s localhost:8402/health` ok; `SELLER_STALL_S=90`
 - [ ] `uv run python scripts/smoke_sellers.py` → SMOKE OK (also proves the hook did not break /report and /convert)
 - [ ] `uv run pytest -q` green
-- [ ] Claude Desktop restarted; the `billguard` server lists 8 or 9 tools; none named approve_retry; no force/retry params
+- [ ] Claude Desktop restarted; the `payguard` server lists 8 or 9 tools; none named approve_retry; no force/retry params
 - [ ] Explorer tabs open: Sepolia seller pay_to address (token transfers), Base mainnet Bazaar payTo
-- [ ] Backup video open and paused at 0:00 (`docs/billguard/demo/backup-video.md`)
-- [ ] Bazaar fallback doc open (`docs/billguard/demo/bazaar-fallback.md`)
+- [ ] Backup video open and paused at 0:00 (`docs/pay-guard/demo/backup-video.md`)
+- [ ] Bazaar fallback doc open (`docs/pay-guard/demo/bazaar-fallback.md`)
 - [ ] Cold-start dry run done once: quit Claude Desktop, relaunch, paste the product spec §8 prompt verbatim (no fixed intent ids), confirm scenario B's "try again" is refused without a second transfer
 - [ ] `uv run python scripts/reset_demo.py --yes` ← LAST COMMAND BEFORE THE DEMO (clears the duplicate guard and the spend)
 
 ## Script (6 minutes) — design §9
 1. Hook: "Agents can already spend money. Who checks they got what they paid for?"
-2. `smoke_sellers.py` on screen; `grep -rn billguard sellers/` is empty. Optional: `--naive-retry` screenshot (two transfers).
+2. `smoke_sellers.py` on screen; `grep -rn payguard sellers/` is empty. Optional: `--naive-retry` screenshot (two transfers).
 3. Claude Desktop, spec §8 prompt, budget $5.
 4. Report → VERIFIED; click the Sepolia explorer link.
 5. Research → SETTLEMENT_UNKNOWN → chain_check(AuthorizationUsed + Transfer, tx) → SETTLED, PAID_NO_DELIVERY, all in one call; show `history` and click the tx link.
@@ -6577,49 +6620,49 @@ git commit -m "feat(sellers): env-gated Stripe x402 seller (sandbox/testnet firs
 9. Limits: no escrow, no refunds; schema-valid is not fact-checked; a second payment needs a human, the agent has no tool for it. (Name `approve_retry.py` only if Task 8.1 shipped.)
 
 ## Prompt for step 3 (paste into Claude Desktop)
-"You have a $5 budget via BillGuard. Buy the ACME company report, then a research report on 'agent payments', then convert document contract-7 to a 20-page PDF. Use purchase intent ids demo-report-1, demo-research-1, demo-convert-1. After each purchase, tell me the payment status, what was delivered, and any findings. Finally list all findings and summarize what was spent, what was delivered, and what is unresolved."
+"You have a $5 budget via PayGuard. Buy the ACME company report, then a research report on 'agent payments', then convert document contract-7 to a 20-page PDF. Use purchase intent ids demo-report-1, demo-research-1, demo-convert-1. After each purchase, tell me the payment status, what was delivered, and any findings. Finally list all findings and summarize what was spent, what was delivered, and what is unresolved."
 ```
 
 - [ ] **Step 2: Run the checklist once end to end (full rehearsal), then commit**
 
 ```bash
-git add docs/billguard/demo/checklist.md
+git add docs/pay-guard/demo/checklist.md
 git commit -m "docs(demo): pre-demo checklist and 6-minute script"
 ```
 
 **Exit criteria (auto):**
-- Run: `grep -c '^- \[x\]' docs/billguard/demo/checklist.md` → Expected: `11` or more after the dry run (the operator ticks boxes in the file as they pass)
-- Run: `grep -c 'reset_demo.py --yes' docs/billguard/demo/checklist.md` → Expected: `1` or more
-- Run: `grep -c '^## Prompt for step 3' docs/billguard/demo/checklist.md` → Expected: `1`
+- Run: `grep -c '^- \[x\]' docs/pay-guard/demo/checklist.md` → Expected: `11` or more after the dry run (the operator ticks boxes in the file as they pass)
+- Run: `grep -c 'reset_demo.py --yes' docs/pay-guard/demo/checklist.md` → Expected: `1` or more
+- Run: `grep -c '^## Prompt for step 3' docs/pay-guard/demo/checklist.md` → Expected: `1`
 - Manual: the rehearsal finishes in under 7 minutes; the last command run was `reset_demo.py --yes`.
 
 ### Task 9.2: Fallback drills (design §10), one per risk `[W-DEMO]`
 
 **Maps to:** design §10 (all five risks), §8.1 and §8.7 fallbacks, non-functional facilitator fallback.
-**Timebox:** 25 min total. **Files:** append a "Fallbacks" section to `docs/billguard/demo/checklist.md`.
+**Timebox:** 25 min total. **Files:** append a "Fallbacks" section to `docs/pay-guard/demo/checklist.md`.
 **SDK calls:** none. **§7 tests covered:** none (operational drills).
 
 **Implementer brief (operator task):** Rehearse each design §10 fallback once so that on stage the switch is a reflex, and write the one-line instruction for each into the checklist's `## Fallbacks` section.
 
 - [ ] **Drill A — facilitator or RPC flakiness:** set `SELLER_FACILITATOR=local` in `.env`, restart the seller, run `smoke_sellers.py` → `SMOKE OK`. Switch back to `remote`. Confirm the backup video plays. Write down: "if x402.org fails on stage: flip to local (30 s), else play the video."
-- [ ] **Drill B — Supabase or Wi-Fi trouble:** set `BILLGUARD_STORE=sqlite`, restart Claude Desktop, run one report purchase → `VERIFIED`. Write down: "sqlite is the default; nothing else changes."
-- [ ] **Drill C — no usable Bazaar seller or mainnet funding delayed:** open `docs/billguard/demo/bazaar-fallback.md`, confirm the probe output is pasted. Write down the one sentence to say.
+- [ ] **Drill B — Supabase or Wi-Fi trouble:** set `PAYGUARD_STORE=sqlite`, restart Claude Desktop, run one report purchase → `VERIFIED`. Write down: "sqlite is the default; nothing else changes."
+- [ ] **Drill C — no usable Bazaar seller or mainnet funding delayed:** open `docs/pay-guard/demo/bazaar-fallback.md`, confirm the probe output is pasted. Write down the one sentence to say.
 - [ ] **Drill D — stale rehearsal state:** run scenario B without a reset → observe `DUPLICATE_SUSPECTED` on the first research call (the stall does not show). Run `reset_demo.py --yes` → scenario B works. Write down: "reset is the last command before the demo."
 - [ ] **Drill E — hook regression:** after any seller edit, `smoke_sellers.py` must show `/report` and `/convert` delivering. Write down: "never edit `sellers/` on demo day."
-- [ ] Append the five written lines under `## Fallbacks` in `docs/billguard/demo/checklist.md` and commit:
+- [ ] Append the five written lines under `## Fallbacks` in `docs/pay-guard/demo/checklist.md` and commit:
 
 ```bash
-git add docs/billguard/demo/checklist.md
+git add docs/pay-guard/demo/checklist.md
 git commit -m "docs(demo): fallback drills for design §10 risks"
 ```
 
 **Exit criteria (auto):**
-- Run: `grep -c '^## Fallbacks' docs/billguard/demo/checklist.md` → Expected: `1`
-- Run: `sed -n '/^## Fallbacks/,$p' docs/billguard/demo/checklist.md | grep -c '^- '` → Expected: `5`
+- Run: `grep -c '^## Fallbacks' docs/pay-guard/demo/checklist.md` → Expected: `1`
+- Run: `sed -n '/^## Fallbacks/,$p' docs/pay-guard/demo/checklist.md | grep -c '^- '` → Expected: `5`
 
 ### Milestone M9 — Final verification (the demo acceptance metrics, PRD §7)
 
-- [ ] **Metric 1:** `smoke_sellers.py` pays `/report` and `/convert` with the plain SDK client; `grep -rn billguard sellers/` is empty.
+- [ ] **Metric 1:** `smoke_sellers.py` pays `/report` and `/convert` with the plain SDK client; `grep -rn payguard sellers/` is empty.
 - [ ] **Metric 2:** from Claude Desktop, one real Sepolia settlement returns `SETTLED` + `VERIFIED` with a transaction hash.
 - [ ] **Metric 3:** `/report-premium` (tier premium) yields `PRICE_MISMATCH` with no signed payload (`get_purchase` shows no `payment_payload` evidence).
 - [ ] **Metric 4:** `/research-slow` yields `SETTLEMENT_UNKNOWN` then `SETTLED` + `PAID_NO_DELIVERY` within one tool call; "try again" yields `DUPLICATE_SUSPECTED` (same or new intent) or `SERVICE_QUARANTINED` (reworded); exactly one on-chain transfer.
@@ -6657,7 +6700,7 @@ git commit -m "docs(demo): fallback drills for design §10 risks"
 | Design §9 demo script | 9.1 |
 | Design §10 risks | 9.2 |
 | Review S1–S9 | S1 → 3.1; S2 → 2.3; S3 → 3.1; S4 → 2.6/5.2; S5 → 5.2; S6 → 1B.1; S7 → 0.1/2.2/2.7; S8 → 2.7/3.3/8.1; S9 → 2.6 (await), 5.1 (adapter+method in hook test) |
-| PRD open questions | Q1 → 1B.1/7.1; Q2 → 1A.2/9.2 drill A; Q3 → 6.1 (flip after step 5; `BILLGUARD_STORE` any time); Q4 → 2.4/4.1 (paths for all PDFs); Q5 closed (3.1 uses 15 min; 2.8 resets) |
+| PRD open questions | Q1 → 1B.1/7.1; Q2 → 1A.2/9.2 drill A; Q3 → 6.1 (flip after step 5; `PAYGUARD_STORE` any time); Q4 → 2.4/4.1 (paths for all PDFs); Q5 closed (3.1 uses 15 min; 2.8 resets) |
 
 ## Appendix B — Plan decisions (inside the design's constraints)
 
@@ -6676,8 +6719,8 @@ git commit -m "docs(demo): fallback drills for design §10 risks"
 13. **`QUOTE_FAILED` reject reason.** A transport error on the unpaid request is not proof that a route is unprotected, so it is rejected without a proven `NOT_X402` finding. Nothing is signed either way.
 14. **45 s budget.** Quote and send timeouts are clipped to the remaining call budget, and each chain read is wrapped in `asyncio.wait_for` against it. The reconcile resend uses an 8 s cap (S4). No pytest covers wall-clock time; Task 5.3's live timing (scenario B under 45 s) is the check.
 15. **Manufact listing (Task 8.4) is a scope addition** the user asked for after the design was approved. It publishes the unchanged stdio server; env variables are listed by name only.
-16. **Dispute email via Primitive (Task 8.5) is a scope addition.** Primitive is email infrastructure for agents (`POST /send-mail`, replies, threads, webhooks), not an arbitration service, so the task sends the seller a documented complaint with the redacted evidence attached and records the thread; BillGuard arbitrates nothing (PRD non-goal respected). Operator-only script, never an MCP tool, moves no money. It is the human side of the existing `report_to_seller` action.
-17. **Stripe x402 seller (Task 8.6) is a scope addition, sandbox and testnet first.** Stripe's offering is seller-side, so it enters BillGuard as one more stranger seller bought through the unchanged code path, env-gated like the Bazaar seller and pinned to whatever network the sandbox endpoint quotes (`STRIPE_SELLER_NETWORK`, default Base Sepolia). A production preview or a funded mainnet wallet is never a requirement; the standard Sepolia seller is the fallback. BillGuard itself never needs a Stripe account to pay.
-18. **Facilitator accounts.** The x402.org facilitator is testnet-only, which is exactly where BillGuard's own sellers run; for every mainnet seller (Bazaar, Stripe) the seller's facilitator settles, so BillGuard as a buyer needs no facilitator account on any network.
-19. **Per-call statistics (Task 2.9) are a scope addition.** Every response gains `transactions`, `delivery` and `budget`, and a read-only `list_purchases` tool exists. The delivery level is derived only from the checks that ran (`verified`, `partial`, `unverified`, `none`); BillGuard never emits a probability, consistent with "schema-valid is not fact-checked".
-20. **Settlement proof is event-based, not `authorizationState` alone (Task 5.2; from external review).** Under EIP-3009 a nonce is consumed by `transferWithAuthorization` or by `cancelAuthorization`, so `authorizationState == true` proves only that the authorization can never be reused. BillGuard marks a purchase `SETTLED` only when the USDC `AuthorizationUsed(from, nonce)` event is found and its transaction holds a `Transfer(from → payTo, amount)` log; a `canceled` event is a proven `PAYMENT_FAILED`; a consumed nonce without proof stays `SETTLEMENT_UNKNOWN` with no resend and a human-review finding, and the guard keeps blocking retries. This re-adds the Transfer-log lookup the design had cut (§5), because the proof is cheap (events are indexed by authorizer and nonce) and it also yields the transaction hash for the demo. Public RPCs cap `eth_getLogs` ranges (HTTP 413 at 2000 blocks on Base Sepolia), so the search runs in 100-block windows from the purchase's start block.
+16. **Dispute email via Primitive (Task 8.5) is a scope addition.** Primitive is email infrastructure for agents (`POST /send-mail`, replies, threads, webhooks), not an arbitration service, so the task sends the seller a documented complaint with the redacted evidence attached and records the thread; PayGuard arbitrates nothing (PRD non-goal respected). Operator-only script, never an MCP tool, moves no money. It is the human side of the existing `report_to_seller` action.
+17. **Stripe x402 seller (Task 8.6) is a scope addition, sandbox and testnet first.** Stripe's offering is seller-side, so it enters PayGuard as one more stranger seller bought through the unchanged code path, env-gated like the Bazaar seller and pinned to whatever network the sandbox endpoint quotes (`STRIPE_SELLER_NETWORK`, default Base Sepolia). A production preview or a funded mainnet wallet is never a requirement; the standard Sepolia seller is the fallback. PayGuard itself never needs a Stripe account to pay.
+18. **Facilitator accounts.** The x402.org facilitator is testnet-only, which is exactly where PayGuard's own sellers run; for every mainnet seller (Bazaar, Stripe) the seller's facilitator settles, so PayGuard as a buyer needs no facilitator account on any network.
+19. **Per-call statistics (Task 2.9) are a scope addition.** Every response gains `transactions`, `delivery` and `budget`, and a read-only `list_purchases` tool exists. The delivery level is derived only from the checks that ran (`verified`, `partial`, `unverified`, `none`); PayGuard never emits a probability, consistent with "schema-valid is not fact-checked".
+20. **Settlement proof is event-based, not `authorizationState` alone (Task 5.2; from external review).** Under EIP-3009 a nonce is consumed by `transferWithAuthorization` or by `cancelAuthorization`, so `authorizationState == true` proves only that the authorization can never be reused. PayGuard marks a purchase `SETTLED` only when the USDC `AuthorizationUsed(from, nonce)` event is found and its transaction holds a `Transfer(from → payTo, amount)` log; a `canceled` event is a proven `PAYMENT_FAILED`; a consumed nonce without proof stays `SETTLEMENT_UNKNOWN` with no resend and a human-review finding, and the guard keeps blocking retries. This re-adds the Transfer-log lookup the design had cut (§5), because the proof is cheap (events are indexed by authorizer and nonce) and it also yields the transaction hash for the demo. Public RPCs cap `eth_getLogs` ranges (HTTP 413 at 2000 blocks on Base Sepolia), so the search runs in 100-block windows from the purchase's start block.
