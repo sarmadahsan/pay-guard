@@ -1,8 +1,8 @@
-# BillGuard
+# PayGuard
 
-**Buyer protection for autonomous agents.** Agents can pay. BillGuard helps them verify what they paid for.
+**Buyer protection for autonomous agents.** Agents can pay. PayGuard helps them verify what they paid for.
 
-BillGuard is an MCP server that acts as a buyer-side purchasing gateway for x402 paid services. An agent calls an ordinary-looking tool; BillGuard records the offered price, enforces a spending mandate, pays through the standard x402 flow, captures settlement evidence, reconciles ambiguous outcomes on-chain, and runs deterministic checks on what was delivered. Sellers need no BillGuard-specific integration.
+PayGuard is an MCP server that acts as a buyer-side purchasing gateway for x402 paid services. An agent calls an ordinary-looking tool; PayGuard records the offered price, enforces a spending mandate, pays through the standard x402 flow, captures settlement evidence, reconciles ambiguous outcomes on-chain, and runs deterministic checks on what was delivered. Sellers need no PayGuard-specific integration.
 
 Built for the YC "Make Something Agents Want" hackathon, October 17–18, 2026.
 
@@ -21,7 +21,7 @@ Design and PRD complete, reviewed, and approved. Implementation starts next.
 
 Python, `x402` SDK 2.25.0 (v2 protocol), FastMCP over stdio, FastAPI demo sellers using the official x402 middleware, SQLite with a Supabase option, Base Sepolia for demo sellers and Base mainnet for one public seller.
 
-## What BillGuard does not do
+## What PayGuard does not do
 
 No escrow, no refunds, no fact-checking of purchased content, no universal MCP proxying. See the design's limits section.
 
