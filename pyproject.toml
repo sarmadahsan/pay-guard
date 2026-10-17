@@ -1,0 +1,33 @@
+[project]
+name = "billguard"
+version = "0.1.0"
+description = "Buyer-side purchasing gateway for x402 paid services (hackathon MVP)"
+requires-python = ">=3.12"
+dependencies = [
+  "x402[fastapi,extensions]==2.25.0",
+  "fastmcp>=2.3",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+  "httpx>=0.27",
+  "web3>=7",
+  "eth-account>=0.13",
+  "pypdf>=5",
+  "pyyaml>=6",
+  "python-dotenv>=1",
+  "supabase>=2.10",
+  "jsonschema>=4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["billguard", "sellers", "scripts"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

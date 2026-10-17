@@ -24,3 +24,13 @@ Python, `x402` SDK 2.25.0 (v2 protocol), FastMCP over stdio, FastAPI demo seller
 ## What BillGuard does not do
 
 No escrow, no refunds, no fact-checking of purchased content, no universal MCP proxying. See the design's limits section.
+
+## Run (hackathon)
+
+    uv sync --group dev
+    cp .env.example .env            # then fill keys via scripts/setup_wallets.py
+    uv run uvicorn sellers.app:app --port 8402      # demo sellers
+    uv run python -m billguard.server               # MCP server over stdio (Claude Desktop launches this)
+    uv run pytest -q
+
+Plan: docs/billguard/design/2026-10-17-billguard-implementation-plan.md
