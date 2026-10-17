@@ -1,6 +1,7 @@
 # Secrets and wallets — never commit
 .env
 .env.*
+!.env.example
 *.key
 *.pem
 keys/
@@ -12,7 +13,8 @@ wallets/
 *.sqlite3
 *.db-wal
 *.db-shm
-artifacts/
+artifacts/*
+!artifacts/.gitkeep
 backup/
 
 # Python

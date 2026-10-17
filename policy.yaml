@@ -1,0 +1,12 @@
+principal_id: demo-agent
+total_budget_minor: 5000000
+per_purchase_cap_minor: 2500000
+allowed_networks:
+  - "eip155:84532"
+  - "eip155:8453"
+allowed_services:
+  - report
+  - report_premium
+  - research
+  - convert
+  - bazaar
