@@ -265,53 +265,6 @@ wheels = [
 ]
 
 [[package]]
-name = "billguard"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "eth-account" },
-    { name = "fastapi" },
-    { name = "fastmcp" },
-    { name = "httpx" },
-    { name = "jsonschema" },
-    { name = "pypdf" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-    { name = "supabase" },
-    { name = "uvicorn" },
-    { name = "web3" },
-    { name = "x402", extra = ["extensions", "fastapi"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "eth-account", specifier = ">=0.13" },
-    { name = "fastapi", specifier = ">=0.115" },
-    { name = "fastmcp", specifier = ">=2.3" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "jsonschema", specifier = ">=4" },
-    { name = "pypdf", specifier = ">=5" },
-    { name = "python-dotenv", specifier = ">=1" },
-    { name = "pyyaml", specifier = ">=6" },
-    { name = "supabase", specifier = ">=2.10" },
-    { name = "uvicorn", specifier = ">=0.30" },
-    { name = "web3", specifier = ">=7" },
-    { name = "x402", extras = ["fastapi", "extensions"], specifier = "==2.25.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest", specifier = ">=8" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-]
-
-[[package]]
 name = "bitarray"
 version = "3.12.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2341,6 +2294,53 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/66/f3/5a20387de9bcd0607871bfc2198ee0e15836da7baa4592ccd7f24c27c986/pathable-0.6.0.tar.gz", hash = "sha256:6404b8b82aef5ff0fd478934137128b99b12212ba35afdde5525ca4f8388ea58", size = 18970, upload-time = "2026-05-19T18:15:11.911Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/e8/6d75ffd9784bce2e93d1ae4415649427e39a53bb172d4672b2b59c6f0a7b/pathable-0.6.0-py3-none-any.whl", hash = "sha256:82c4ca6c98c502ad12e0d4e9779b6210afee93c38990988c8c5d1b49bdcdf566", size = 18983, upload-time = "2026-05-19T18:15:10.728Z" },
+]
+
+[[package]]
+name = "pay-guard"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "eth-account" },
+    { name = "fastapi" },
+    { name = "fastmcp" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "pypdf" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+    { name = "supabase" },
+    { name = "uvicorn" },
+    { name = "web3" },
+    { name = "x402", extra = ["extensions", "fastapi"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "eth-account", specifier = ">=0.13" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "fastmcp", specifier = ">=2.3" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", specifier = ">=4" },
+    { name = "pypdf", specifier = ">=5" },
+    { name = "python-dotenv", specifier = ">=1" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "supabase", specifier = ">=2.10" },
+    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "web3", specifier = ">=7" },
+    { name = "x402", extras = ["fastapi", "extensions"], specifier = "==2.25.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
 ]
 
 [[package]]

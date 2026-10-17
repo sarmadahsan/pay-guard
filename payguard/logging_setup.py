@@ -12,7 +12,7 @@ def configure_logging() -> None:
     global _CONFIGURED
     if _CONFIGURED:
         return
-    level = os.environ.get("BILLGUARD_LOG_LEVEL", "INFO").upper()
+    level = os.environ.get("PAYGUARD_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         stream=sys.stderr,
         level=level,
