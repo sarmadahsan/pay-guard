@@ -20,6 +20,8 @@ from eth_account import Account
 from x402.client import x402Client
 from x402.extensions.bazaar import ListDiscoveryResourcesParams, with_bazaar
 from x402.http import FacilitatorConfig, HTTPFacilitatorClientSync
+from x402.http.constants import PAYMENT_RESPONSE_HEADER
+from x402.http.utils import decode_payment_response_header
 from x402.http.clients.httpx import PaymentError, x402HttpxClient
 from x402.mechanisms.evm.exact import ExactEvmScheme
 from x402.mechanisms.evm.signers import EthAccountSigner
@@ -149,6 +151,19 @@ def make_mainnet_client(account: Account, cand: dict) -> x402Client:
     return client
 
 
+def check_settlement(headers) -> tuple[bool, str]:
+    """Return (settled, tx). Settled only if the PAYMENT-RESPONSE header decodes with success and a tx hash."""
+    raw = headers.get(PAYMENT_RESPONSE_HEADER)  # httpx Headers are case-insensitive
+    if not raw:
+        return False, "-"
+    try:
+        sr = decode_payment_response_header(raw)
+    except Exception:  # noqa: BLE001
+        return False, "-"
+    tx = sr.transaction or "-"
+    return bool(sr.success and sr.transaction), tx
+
+
 async def smoke(cands: list[dict], n: int) -> bool:
     """Pay the first n smokeable candidates; True only if all n ran and returned 2xx."""
     key = os.environ.get("BUYER_KEY_MAINNET")
@@ -157,19 +172,19 @@ async def smoke(cands: list[dict], n: int) -> bool:
         return False
     acct = Account.from_key(key)
     chosen = [c for c in cands if c["smokeable"]][:n]
-    if len(chosen) < n:
-        print(f"only {len(chosen)} smokeable (plain GET) candidates, wanted {n}", file=sys.stderr)
-    if not chosen:
+    if not chosen or len(chosen) < n:
+        print(f"only {len(chosen)} smokeable (plain GET) candidates, wanted {n}; not paying anything", file=sys.stderr)
         return False
     print(f"mainnet buyer {acct.address}; planned total spend up to {sum(c['amount'] for c in chosen)} minor", file=sys.stderr)
-    ok = len(chosen) >= n
+    ok = True
     for c in chosen:
         try:
             async with x402HttpxClient(make_mainnet_client(acct, c), timeout=60) as http:
                 r = await http.get(c["resource"])
             ct = r.headers.get("content-type", "")
-            print(f"SMOKE {c['resource']} -> {r.status_code} {ct} settle_header={'PAYMENT-RESPONSE' in r.headers} body={r.text[:200]!r}")
-            if not 200 <= r.status_code < 300:
+            settled, tx = check_settlement(r.headers)
+            print(f"SMOKE {c['resource']} -> {r.status_code} {ct} settled={settled} tx={tx} body={r.text[:200]!r}")
+            if not (200 <= r.status_code < 300 and settled):
                 ok = False
         except PaymentError as e:
             print(f"SMOKE {c['resource']} -> PaymentError {e}")
