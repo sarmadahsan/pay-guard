@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -33,6 +34,13 @@ PAY_TO = os.environ["SELLER_PAY_TO"]
 CONVERT_PAGES = 12  # always short-delivers (scenario C)
 
 
+def redact_url(url: str) -> str:
+    """scheme://host[:port]/path only: drops user-info and query string so no credential is logged."""
+    parts = urlsplit(url)
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{parts.hostname}{port}{parts.path}"
+
+
 def build_server() -> x402ResourceServer:
     mode = os.environ.get("SELLER_FACILITATOR", "remote")
     if mode == "local":
@@ -43,7 +51,7 @@ def build_server() -> x402ResourceServer:
     else:
         url = os.environ.get("FACILITATOR_URL", "https://x402.org/facilitator")
         server = x402ResourceServer(HTTPFacilitatorClient(FacilitatorConfig(url=url)))
-        log.info("facilitator: remote %s", url)
+        log.info("facilitator: remote %s", redact_url(url))
     server.register(NETWORK, ExactEvmServerScheme())
     return server
 
