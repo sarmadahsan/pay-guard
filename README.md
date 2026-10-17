@@ -12,10 +12,10 @@ Design and PRD complete, reviewed, and approved. Implementation starts next.
 
 ## Documents
 
-- [Design (final, approved)](docs/billguard/design/design-final.md)
-- [PRD](docs/billguard/prd/prd.md)
-- Review history: [round 1](docs/billguard/design/design-review-1.md), [round 2](docs/billguard/design/design-review-2.md), [round 3](docs/billguard/design/design-review-3.md)
-- Earlier drafts: [v1](docs/billguard/design/2026-10-17-design.md), [v2](docs/billguard/design/design-v2.md)
+- [Design (final, approved)](docs/pay-guard/design/design-final.md)
+- [PRD](docs/pay-guard/prd/prd.md)
+- Review history: [round 1](docs/pay-guard/design/design-review-1.md), [round 2](docs/pay-guard/design/design-review-2.md), [round 3](docs/pay-guard/design/design-review-3.md)
+- Earlier drafts: [v1](docs/pay-guard/design/2026-10-17-design.md), [v2](docs/pay-guard/design/design-v2.md)
 
 ## Planned stack
 
