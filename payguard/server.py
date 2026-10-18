@@ -86,6 +86,18 @@ async def convert_document(doc_id: NonBlank, pages: Annotated[int, Field(ge=1)],
     return await purchase(get_deps(), "convert", {"doc_id": doc_id.strip(), "pages": int(pages)}, purchase_intent_id, task_id)
 
 
+# ---- Meridian Intel (hackathon demo): the double-charge seller on Base Sepolia. The function always exists (so a
+# BAZAAR_TOOL_NAME collision is refused below); it is exposed as a tool only when the registry has an `intel` service. ----
+async def get_intel_report(ticker: NonBlank, purchase_intent_id: NonBlank, task_id: str | None = None) -> dict[str, Any]:
+    return await purchase(get_deps(), "intel", {"ticker": ticker.strip().upper()}, purchase_intent_id, task_id)
+
+
+def _register_intel_tool() -> None:
+    if load_registry().get("intel") is None:  # INTEL_BASE_URL unset
+        return
+    mcp.tool(get_intel_report, description=f"Buy an equity intel report for a ticker from Meridian Intel: $0.50 USDC on Base Sepolia. {REUSE}", app=UI)
+
+
 # ---- fourth paid tool: a public Bazaar seller on Base mainnet (design §4, §8.7). Exists iff the registry has a `bazaar` service. ----
 _BAZAAR_NAME_OK = re.compile(r"[a-z][a-z0-9_]*")  # used with fullmatch: `$` would accept a trailing newline
 _BAZAAR_NAME_BANNED = ("approve", "force", "retry")  # never let an env value name a tool like an escape hatch
@@ -168,6 +180,7 @@ def purchases_view() -> str:
     return (Path(__file__).parent / "ui" / "purchases.html").read_text(encoding="utf-8")
 
 
+_register_intel_tool()
 _register_bazaar_tool()  # last, after every other tool and module name exists
 
 if __name__ == "__main__":
