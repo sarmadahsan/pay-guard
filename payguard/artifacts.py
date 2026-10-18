@@ -40,8 +40,13 @@ class Artifact:
 
 
 def pdf_page_count(path: str) -> int | None:
-    """Filled in by M4 (Task 4.1). Returns None until then."""
-    return None
+    """Page count via pypdf; None when the file is not a readable PDF (the validator then fails with actual=None)."""
+    try:
+        from pypdf import PdfReader
+
+        return len(PdfReader(path).pages)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def store_artifact(body: bytes, content_type: str, purchase_id: str, root: Path) -> Artifact:

@@ -104,3 +104,40 @@ def test_null_json_ticker_does_not_match_none_string(reg):
 def test_store_rejects_purchase_id_outside_root(tmp_path, pid):
     with pytest.raises(ValueError):
         store_artifact(b"%PDF-1.4", "application/pdf", pid, tmp_path / "root")
+
+
+# ---- M4: pdf_page_count and content_hash ----
+from payguard.purchase import purchase
+from tests.conftest import pdf_bytes
+
+
+def test_pdf_page_count_validator(reg, tmp_path):
+    art = store_artifact(pdf_bytes(12), "application/pdf", "p9", tmp_path)
+    results = dict((r[0], r) for r in run_validators(reg["convert"], {"doc_id": "d", "pages": 20}, art))
+    name, passed, detail = results["pdf_page_count"]
+    assert passed is False and detail["expected"] == 20 and detail["actual"] == 12 and "12" in detail["reason"] and "20" in detail["reason"]
+    ok = dict((r[0], r) for r in run_validators(reg["convert"], {"doc_id": "d", "pages": 12}, art))
+    assert ok["pdf_page_count"][1] is True
+
+
+def test_content_hash_validator(tmp_path):
+    from dataclasses import replace
+    from payguard.verify import content_hash
+    svc = replace(load_registry(base_url="http://x")["report"], validators=("content_hash",))
+    art = store_artifact(b"hello", "text/plain", "p10", tmp_path)
+    name, passed, detail = content_hash(svc, {}, art)
+    assert passed and detail["sha256"] == art.sha256 and detail["recomputed"] is True
+    Path(art.path).write_bytes(b"tampered")
+    assert content_hash(svc, {}, art)[1] is False
+
+
+async def test_convert_flow_fulfillment_failed_with_evidence(deps, seller):
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "FAILED"
+    assert r["artifact"]["path"].endswith(".pdf") and r["artifact"]["page_count"] == 12 and "json" not in r["artifact"]
+    f = [x for x in r["findings"] if x["code"] == "FULFILLMENT_FAILED"]
+    assert len(f) == 1 and f[0]["severity"] == "proven" and "12" in f[0]["summary"] and "20" in f[0]["summary"]
+    kinds = {e.evidence_id: e.kind for e in deps.repo.list_evidence(r["purchase_id"])}
+    assert {kinds[i] for i in f[0]["evidence_ids"]} == {"validator", "artifact"}
+    assert r["safe_next_actions"] == ["human_review", "report_to_seller"]
+    assert len(seller.paid) == 1 and deps.repo.spent_minor("test") == 2_000_000

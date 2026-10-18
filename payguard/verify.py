@@ -69,11 +69,35 @@ def non_empty(service: Service, args: dict[str, Any], art: Artifact) -> Validato
     return "non_empty", ok, {"size": art.size, **({} if ok else {"reason": "empty artifact"})}
 
 
+def pdf_page_count(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
+    from payguard import artifacts as _artifacts
+
+    expected = int(args.get("pages", 0))
+    actual = art.page_count if art.page_count is not None else (_artifacts.pdf_page_count(art.path) if art.path else None)
+    ok = actual is not None and actual == expected
+    detail: dict[str, Any] = {"expected": expected, "actual": actual}
+    if not ok:
+        detail["reason"] = f"page count {actual} != requested {expected}"
+    return "pdf_page_count", ok, detail
+
+
+def content_hash(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
+    import hashlib
+    from pathlib import Path
+
+    if art.path:
+        actual = hashlib.sha256(Path(art.path).read_bytes()).hexdigest()
+        ok = actual == art.sha256
+        return "content_hash", ok, {"sha256": art.sha256, "recomputed": True, **({} if ok else {"reason": f"content hash {actual} != recorded {art.sha256}"})}
+    return "content_hash", True, {"sha256": art.sha256, "recomputed": False}
+
+
 VALIDATORS: dict[str, Validator] = {
     "ticker_matches": ticker_matches,
     "content_type": content_type,
     "non_empty": non_empty,
-    # "pdf_page_count" and "content_hash" are registered by M4 (Task 4.1)
+    "pdf_page_count": pdf_page_count,
+    "content_hash": content_hash,
 }
 
 
