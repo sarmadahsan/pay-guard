@@ -1,8 +1,9 @@
+import dataclasses
 import time
 
 from payguard import reconcile as reconcile_mod
 from payguard.models import PaymentStatus
-from payguard.recovery import STALE_S, run_startup_recovery
+from payguard.recovery import RECHECK_MARGIN_S, STALE_S, run_startup_recovery
 from tests.test_guard import seed
 
 P = PaymentStatus
@@ -141,3 +142,35 @@ async def test_abandoned_history_marks_recovery(deps, monkeypatch):
     row = seed(deps.repo, P.AUTHORIZED, age_s=STALE_S + 5)
     await run_startup_recovery(deps)
     assert deps.repo.get_purchase(row.purchase_id).history[-1]["by"] == "startup_recovery"
+
+
+async def test_recheck_wait_is_clamped_against_clock_skew(deps, monkeypatch):
+    _noop_reconcile(monkeypatch)
+    row = seed(deps.repo, P.SENT)
+    future = dataclasses.replace(row, updated_at=time.time() + 3600)
+    # list_stuck's SQL never returns a future-dated row; force it to model a stepped-back clock
+    monkeypatch.setattr(deps.repo, "list_stuck", lambda s: [] if s else [future])
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    monkeypatch.setattr(deps, "sleep", fake_sleep, raising=False)
+    await run_startup_recovery(deps)
+    assert len(slept) == 1 and slept[0] <= STALE_S + RECHECK_MARGIN_S
+
+
+async def test_live_row_started_during_wait_is_left_alone(deps, monkeypatch):
+    _noop_reconcile(monkeypatch)
+    young = seed(deps.repo, P.SENT, intent="young", age_s=10)
+    live = []
+
+    async def fake_sleep(s):
+        old = time.time() - STALE_S - 5
+        deps.repo.conn.execute("UPDATE purchases SET updated_at = ? WHERE purchase_id = ?", (old, young.purchase_id))
+        live.append(seed(deps.repo, P.SENT, intent="live"))
+
+    monkeypatch.setattr(deps, "sleep", fake_sleep, raising=False)
+    await run_startup_recovery(deps)
+    assert deps.repo.get_purchase(live[0].purchase_id).payment_status == P.SENT
+    assert deps.repo.get_purchase(young.purchase_id).payment_status == P.SETTLEMENT_UNKNOWN

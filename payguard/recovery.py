@@ -66,7 +66,9 @@ async def run_startup_recovery(deps: Any) -> None:
     await _phase2(deps, _phase1(deps, stuck))
     if young:
         now = time.time()
-        wait = max(STALE_S - min(now - r.updated_at for r in young), 0.0) + RECHECK_MARGIN_S
+        youngest_age = min(now - r.updated_at for r in young)
+        # clamp: a wall clock stepped backwards (future updated_at) must not make the wait unbounded
+        wait = min(max(STALE_S - youngest_age, 0.0), STALE_S) + RECHECK_MARGIN_S
         log.info("startup recovery: %d young in-flight row(s); re-checking in %.0fs", len(young), wait)
         await deps.sleep(wait)
         await _pass(deps)
