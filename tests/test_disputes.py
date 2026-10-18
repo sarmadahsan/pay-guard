@@ -414,6 +414,9 @@ async def test_auto_dispute_files_for_a_blocked_overcharge(deps, seller, contact
     assert r["safe_next_actions"] == ["get_purchase", "check_dispute"]  # a refusal: nothing paid, nothing to review
     (ev,) = _disputes(deps, r["purchase_id"])
     assert ev.payload["finding_codes"] == ["PRICE_MISMATCH"]
+    text = (deps.artifact_dir / "disputes" / f"{r['purchase_id']}.txt").read_text()
+    assert "(quoted 0.750000 USDC, refused)" in text and "no money moved" in text and "agreed price of 0.500000 USDC" in text
+    assert "None USDC" not in text and "refund" not in text.lower() and "Paid:" not in text
 
 
 async def test_auto_dispute_send_failure_never_changes_the_outcome(deps, seller, contact_env, monkeypatch):
@@ -476,7 +479,7 @@ async def test_auto_dispute_covers_the_reconcile_path_for_paid_no_delivery(make_
     assert ev.payload["contact_source"] == "well_known" and ev.payload["finding_codes"] == ["PAID_NO_DELIVERY"]
 
 
-async def test_auto_dispute_skips_when_the_call_budget_is_nearly_spent(deps, seller, contact_env, caplog):
+async def test_auto_dispute_skips_and_records_when_the_call_budget_is_nearly_spent(deps, seller, contact_env, caplog):
     import logging
 
     from payguard.disputes import auto_dispute
@@ -488,8 +491,55 @@ async def test_auto_dispute_skips_when_the_call_budget_is_nearly_spent(deps, sel
     row = deps.repo.get_purchase(pid)
     with caplog.at_level(logging.WARNING, logger="payguard.disputes"):
         same = await auto_dispute(deps, row, time.monotonic() + 2.0)  # < AUTO_MIN_REMAINING_S left
-    assert same.payment_status == row.payment_status and not _disputes(deps, pid) and not _auto_failures(deps, pid)
-    assert any("auto_dispute skipped" in rec.message for rec in caplog.records)
-    after = await auto_dispute(deps, row, time.monotonic() + 45.0)  # the next terminal pass (e.g. reconcile) files it
-    assert len(_disputes(deps, pid)) == 1 and after.history[-1]["state"] == "DISPUTE_FILED"
-    assert await auto_dispute(deps, after, time.monotonic() + 45.0) is not None and len(_disputes(deps, pid)) == 1
+    assert same.payment_status == row.payment_status == "SETTLED" and not _disputes(deps, pid)
+    (err,) = _auto_failures(deps, pid)  # a terminal row gets no later pass, so the skip is on the record
+    assert "skipped" in err.payload["error"] and "call budget" in err.payload["error"]
+    assert any("auto_dispute failed" in rec.message for rec in caplog.records)
+    resp = build_response(deps, same)
+    assert resp["dispute"] is None and resp["safe_next_actions"] == ["human_review", "report_to_seller"]
+    again = await auto_dispute(deps, same, time.monotonic() + 45.0)  # one automatic attempt per purchase
+    assert not _disputes(deps, pid) and len(_auto_failures(deps, pid)) == 1 and again.payment_status == "SETTLED"
+    out = await file_dispute(deps, pid, backend=DryRunBackend(deps.artifact_dir))  # the agent still can
+    assert out["filed_by"] == "agent" and len(_disputes(deps, pid)) == 1
+
+
+async def test_file_for_purchase_is_serialized_per_purchase(deps, seller, contact_env):
+    import asyncio
+
+    from payguard.disputes import file_for_purchase
+
+    _with_contact(deps)
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = r["purchase_id"]
+
+    class SlowDryRun(DryRunBackend):
+        sends = 0
+
+        async def send_mail(self, **kw):
+            SlowDryRun.sends += 1
+            await asyncio.sleep(0.05)  # both callers would pass the check-then-act window without the lock
+            return await super().send_mail(**kw)
+
+    backend = SlowDryRun(deps.artifact_dir)
+    a, b = await asyncio.gather(file_for_purchase(deps, pid, backend, filed_by="policy"),
+                                file_for_purchase(deps, pid, backend, filed_by="agent"))
+    assert SlowDryRun.sends == 1 and len(_disputes(deps, pid)) == 1
+    assert {a.get("already_filed"), b.get("already_filed")} == {None, True}
+    assert a["dispute_id"] == b["dispute_id"] and a["filed_by"] == b["filed_by"] == "policy"
+    assert [h["state"] for h in deps.repo.get_purchase(pid).history].count("DISPUTE_FILED") == 1
+
+
+def test_render_email_for_a_refused_overcharge_claims_no_payment():
+    bundle = {"purchase": {"purchase_id": "p1", "service_id": "report_premium", "attempt": 1, "args": {"ticker": "ACME"},
+                           "payment_status": "REJECTED", "fulfillment_status": "PENDING", "paid": False,
+                           "authorized_amount_minor": None, "amount_usdc": None, "quoted_amount_minor": 750_000,
+                           "quoted_usdc": "0.750000", "settlement_tx": None, "buyer_address": None},
+              "seller": {"pay_to": "0xseller", "network": "eip155:84532", "accepted_price_minor": 500_000,
+                         "accepted_price_usdc": "0.500000", "contact_email": "s@x.test"},
+              "findings": [{"code": "PRICE_MISMATCH", "severity": "proven", "summary": "quoted 750000 minor exceeds accepted 500000"}],
+              "evidence": [], "explorer_url": None}
+    subject, body = render_email(bundle)
+    assert subject == "Dispute: report_premium purchase p1 (quoted 0.750000 USDC, refused)"
+    assert "None" not in subject and "None" not in body and "refund" not in body.lower() and "Paid:" not in body
+    assert "Quoted: 0.750000 USDC against an agreed price of 0.500000 USDC" in body and "no money moved" in body
+    assert "quote the agreed price for this service (the agreed price is 0.500000 USDC); no payment was made" in body

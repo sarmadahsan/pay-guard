@@ -39,8 +39,13 @@ Rules the hook keeps:
   and fulfillment status stay exactly what the checks proved; the failure is logged and recorded as
   `seller_error` evidence `{reason: "auto_dispute failed", ...}`, and the agent can still call `file_dispute`.
   One automatic attempt per purchase.
-- **The 45 s call budget wins.** With fewer than 5 s left the hook skips and logs; the next terminal pass
-  (reconcile or recovery) files it. Nothing in the hook can create a payment.
+- **The 45 s call budget wins.** With fewer than 5 s left the hook skips, logs, and records the same
+  `auto_dispute failed` evidence (a terminal row gets no later pass), so `report_to_seller` stays in
+  `safe_next_actions` and the agent can call `file_dispute`. Nothing in the hook can create a payment.
+- **A refusal is not a payment.** For `PRICE_MISMATCH` the email reports the quoted price against the agreed
+  one, says no money moved, and asks the seller to quote the agreed price; only paid rows ask for a refund.
+- **One dispute per purchase, even under concurrency.** The check, the send and the ledger write hold a
+  per-purchase lock, so an overlapping `file_dispute` and auto-dispute cannot both send.
 - `get_spending_policy` reports `auto_dispute` next to the budget, so the mandate is inspectable. Set it to
   `false` to go back to agent-initiated disputes only. The loader rejects anything but `true`/`false`.
 

@@ -15,7 +15,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from payguard.models import EvidenceKind, FindingCode, NextAction, Purchase, history_entry
+from payguard.models import EvidenceKind, FindingCode, NextAction, PaymentStatus, Purchase, history_entry
 from payguard.primitive import DryRunBackend, PrimitiveBackend, build_backend
 from payguard.registry import Service
 from payguard.response import dispute_state, explorer_url, usdc  # noqa: F401  (dispute_state re-exported)
@@ -32,6 +32,7 @@ REPLY_CAP = 4000
 AUTO_MIN_REMAINING_S = 5.0  # Task 8.6: skip the in-call auto dispute when less than this is left of the 45 s call budget
 AUTO_FAILED = "auto_dispute failed"  # SELLER_ERROR evidence reason; one automatic attempt per purchase
 Backend = PrimitiveBackend | DryRunBackend
+_FILE_LOCKS: dict[str, asyncio.Lock] = {}  # per purchase: the one-dispute check and the send+record are one critical section
 
 
 # ---- bundle ---------------------------------------------------------------------------------------------------
@@ -63,14 +64,19 @@ def build_bundle(deps: Any, purchase_id: str) -> dict[str, Any]:
                 for e in all_evidence if e.evidence_id in wanted and e.kind not in (EvidenceKind.DISPUTE, EvidenceKind.DISPUTE_REPLY)]
     service: Service | None = deps.registry.get(row.service_id)
     buyer = next((e["payload"].get("from") for e in evidence if e["kind"] == EvidenceKind.PAYMENT_PAYLOAD), None)
+    paid = row.payment_status == PaymentStatus.SETTLED  # a PRICE_MISMATCH refusal is a quote we declined, not a payment
     return {
         "principal_id": row.principal_id,
         "purchase": {"purchase_id": row.purchase_id, "service_id": row.service_id, "attempt": row.attempt, "args": row.args,
                      "payment_status": str(row.payment_status), "fulfillment_status": str(row.fulfillment_status),
+                     "paid": paid,
                      "authorized_amount_minor": row.authorized_amount_minor, "amount_usdc": usdc(row.authorized_amount_minor),
+                     "quoted_amount_minor": row.quoted_amount_minor, "quoted_usdc": usdc(row.quoted_amount_minor),
                      "currency": "USDC", "settlement_tx": row.settlement_tx, "created_at": row.created_at,
                      "buyer_address": buyer, "history": row.history},
         "seller": {"pay_to": row.pay_to, "network": row.network, "url_template": service.url_template if service else None,
+                   "accepted_price_minor": service.accepted_price_minor if service else None,
+                   "accepted_price_usdc": usdc(service.accepted_price_minor) if service else None,
                    "contact_email": service.contact_email if service else None},
         "findings": [f.to_dict() for f in findings],
         "evidence": evidence,
@@ -82,7 +88,10 @@ def build_bundle(deps: Any, purchase_id: str) -> dict[str, Any]:
 
 def _asks(bundle: dict[str, Any]) -> str:
     codes = {f["code"] for f in bundle["findings"]}
-    p = bundle["purchase"]
+    p, s = bundle["purchase"], bundle["seller"]
+    if not p.get("paid"):  # refused before any payment: there is nothing to refund
+        accepted = f" (the agreed price is {s['accepted_price_usdc']} USDC)" if s.get("accepted_price_usdc") else ""
+        return f"quote the agreed price for this service{accepted}; no payment was made and none will be at the quoted price"
     refund = f"refund {p['amount_usdc']} USDC to the buyer address"
     if p.get("buyer_address"):
         refund += f" {p['buyer_address']}"
@@ -98,6 +107,13 @@ def render_email(bundle: dict[str, Any]) -> tuple[str, str]:
               if e["kind"] == EvidenceKind.VALIDATOR and e["payload"].get("passed") is False]
     errors = [e["payload"] for e in bundle["evidence"] if e["kind"] == EvidenceKind.SELLER_ERROR]
     proof = bundle.get("explorer_url") or p.get("settlement_tx") or "see the attached settlement evidence"
+    if p.get("paid"):
+        money = [f"  - Paid: {p['amount_usdc']} USDC on {s['network']} to {s['pay_to']}", f"  - Settlement: {proof}"]
+    else:
+        quoted = f"{p['quoted_usdc']} USDC" if p.get("quoted_usdc") else "a price PayGuard could not accept"
+        accepted = f" against an agreed price of {s['accepted_price_usdc']} USDC" if s.get("accepted_price_usdc") else ""
+        money = [f"  - Quoted: {quoted}{accepted} on {s['network']}" + (f" (pay_to {s['pay_to']})" if s.get("pay_to") else ""),
+                 "  - Payment: none. PayGuard refused the quote before signing anything; no money moved."]
     lines = [
         "Hello,",
         "",
@@ -106,8 +122,7 @@ def render_email(bundle: dict[str, Any]) -> tuple[str, str]:
         "",
         "What happened:",
         f"  - Service: {p['service_id']} (attempt {p['attempt']}); request: {json.dumps(p.get('args') or {}, sort_keys=True)}",
-        f"  - Paid: {p['amount_usdc']} USDC on {s['network']} to {s['pay_to']}",
-        f"  - Settlement: {proof}",
+        *money,
         f"  - Delivery status recorded by PayGuard: {p['fulfillment_status']}",
         "",
         "Why this is a dispute:",
@@ -123,14 +138,18 @@ def render_email(bundle: dict[str, Any]) -> tuple[str, str]:
         "",
         f"What I ask: {_asks(bundle)}.",
         "",
-        f"The attached payguard-evidence.json holds the quote, the settlement proof, the delivered artifact's hash and "
-        f"the failed checks. The signed payment authorization is redacted; the on-chain record is the proof.",
+        (f"The attached payguard-evidence.json holds the quote, the settlement proof, the delivered artifact's hash and "
+         f"the failed checks. The signed payment authorization is redacted; the on-chain record is the proof.")
+        if p.get("paid") else
+        "The attached payguard-evidence.json holds your 402 quote and the option PayGuard selected and refused.",
         "",
-        "Please reply to this email with how you will resolve it. I will not pay for this request again.",
+        "Please reply to this email with how you will resolve it. I will not pay for this request again."
+        if p.get("paid") else "Please reply to this email with how you will resolve it.",
         "",
         f"Reference: {p['purchase_id']}",
     ]
-    subject = f"Dispute: {p['service_id']} purchase {p['purchase_id']} ({p['amount_usdc']} USDC)"
+    amount = f"{p['amount_usdc']} USDC" if p.get("paid") else f"quoted {p.get('quoted_usdc') or 'unacceptable price'} USDC, refused"
+    subject = f"Dispute: {p['service_id']} purchase {p['purchase_id']} ({amount})"
     return subject, "\n".join(lines)
 
 
@@ -189,6 +208,12 @@ async def file_for_purchase(deps: Any, purchase_id: str, backend: Backend | None
     repo = deps.repo
     if repo.get_purchase(purchase_id) is None:
         return {"error": f"purchase {purchase_id} not found"}
+    async with _FILE_LOCKS.setdefault(purchase_id, asyncio.Lock()):  # auto_dispute, recovery and the tool may overlap
+        return await _file_locked(deps, purchase_id, backend, filed_by)
+
+
+async def _file_locked(deps: Any, purchase_id: str, backend: Backend | None, filed_by: str) -> dict[str, Any]:
+    repo = deps.repo
     existing = [e for e in repo.list_evidence(purchase_id) if e.kind == EvidenceKind.DISPUTE]
     if existing:
         return {**_dispute_result(deps, purchase_id, existing[0].payload), "already_filed": True}
@@ -237,9 +262,9 @@ def _wants_auto_dispute(deps: Any, row: Purchase) -> bool:
 async def auto_dispute(deps: Any, row: Purchase, deadline: float, backend: Backend | None = None) -> Purchase:
     """Hook run once a purchase row is terminal and its findings are written (purchase, reconcile, startup recovery).
 
-    Never changes the purchase outcome: a failure to send is logged and recorded as SELLER_ERROR evidence with
-    reason AUTO_FAILED; a call with too little budget left is skipped and logged. Creates no payment. Returns the
-    (re-read) row so callers keep the same shape.
+    Never changes the purchase outcome: a failure to send, or a call with too little budget left, is logged and
+    recorded as SELLER_ERROR evidence with reason AUTO_FAILED (a terminal row gets no later pass, so the record is
+    what tells the agent to call file_dispute itself). Creates no payment. Returns the (re-read) row.
     """
     repo = deps.repo
     pid = row.purchase_id
@@ -248,8 +273,7 @@ async def auto_dispute(deps: Any, row: Purchase, deadline: float, backend: Backe
             return row
         remaining = deadline - time.monotonic()
         if remaining < AUTO_MIN_REMAINING_S:
-            log.warning("auto_dispute skipped for %s: %.1f s left of the call budget", pid, remaining)
-            return row
+            raise TimeoutError(f"skipped: {remaining:.1f} s left of the call budget")
         async with asyncio.timeout(remaining - 1.0):
             result = await file_for_purchase(deps, pid, backend, filed_by="policy")
         if "error" in result:
