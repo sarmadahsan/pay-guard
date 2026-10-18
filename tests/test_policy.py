@@ -72,3 +72,16 @@ def test_load_policy_yaml(tmp_path):
                  "allowed_networks: ['eip155:84532']\nallowed_services: [report]\n")
     p = load_policy(f)
     assert p.principal_id == "demo" and p.total_budget_minor == 5_000_000 and p.allowed_services == ("report",)
+
+
+@pytest.mark.parametrize("bad", [-1_000_000, 0, True, 1.5, "500000"])
+def test_non_positive_or_non_integer_amount_rejected(policy, reg, bad):
+    with pytest.raises(MandateError) as ei:
+        check_mandate(policy, reg["report"], bad, USDC[SEPOLIA], spent_minor=0)
+    assert ei.value.code == RejectReason.PRICE_MISMATCH
+
+
+@pytest.mark.parametrize("bad", [-1, 1.0, True])
+def test_invalid_spent_is_caller_bug(policy, reg, bad):
+    with pytest.raises(ValueError):
+        check_mandate(policy, reg["report"], 500_000, USDC[SEPOLIA], spent_minor=bad)

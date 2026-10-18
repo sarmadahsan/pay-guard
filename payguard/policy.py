@@ -49,6 +49,11 @@ def check_service_allowed(policy: Policy, service: Service) -> None:
 
 def check_mandate(policy: Policy, service: Service, amount_minor: int, asset: str, spent_minor: int) -> None:
     """PRICE_MISMATCH and BUDGET_EXCEEDED rules (PRD F4). Raises MandateError; returns None when allowed."""
+    if type(amount_minor) is not int or amount_minor <= 0:
+        raise MandateError(RejectReason.PRICE_MISMATCH,
+                           f"quoted amount {amount_minor!r} is not a positive integer of minor units")
+    if type(spent_minor) is not int or spent_minor < 0:
+        raise ValueError(f"spent_minor must be a non-negative int, got {spent_minor!r}")
     if asset.lower() != service.asset.lower():
         raise MandateError(RejectReason.PRICE_MISMATCH, f"asset {asset} is not canonical USDC {service.asset} on {service.network}")
     if amount_minor > service.accepted_price_minor:
