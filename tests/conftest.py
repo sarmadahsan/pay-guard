@@ -45,6 +45,11 @@ class FakeSeller:
     """Looks like the official middleware from the buyer's side.
 
     mode: ok | timeout | settle_failed | http_502 | no_header | bad_header | plain200 | v1 | nonce_used | false_failure
+          | truncated
+
+    truncated settles, then sends only the first 60% of the body under the ORIGINAL Content-Length (what a seller whose
+    upstream stream dropped mid-way sends; the real demo seller cannot do the length mismatch under uvicorn, see
+    sellers/truncate.py, so the transport check is covered here).
 
     false_failure mirrors Meridian Intel's GET /intel/{ticker}: the payment settles, then the seller answers 402 with a
     "Payment failed ... retry" JSON body and neither a PAYMENT-RESPONSE nor a PAYMENT-REQUIRED header.
@@ -118,6 +123,10 @@ class FakeSeller:
             amount=str(self.price_for(request.url.path))))
         if mode == "ok":
             return httpx.Response(200, content=body, headers={"content-type": ct, PAYMENT_RESPONSE_HEADER: settle_ok})
+        if mode == "truncated":
+            cut = body[: max(1, int(len(body) * 0.6))]
+            return httpx.Response(200, content=cut, headers={"content-type": ct, "content-length": str(len(body)),
+                                                             PAYMENT_RESPONSE_HEADER: settle_ok})
         if mode == "timeout":
             raise httpx.ReadTimeout("stalled after settle", request=request)
         if mode == "settle_failed":

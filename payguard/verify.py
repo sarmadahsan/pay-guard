@@ -1,6 +1,15 @@
-"""Hard-coded validators (design §5). Each returns (name, passed, detail). Exceptions mean UNVERIFIED."""
+"""Hard-coded validators (design §5). Each returns (name, passed, detail). Exceptions mean UNVERIFIED.
+
+`not_truncated` is the gate: it runs first for every service and, when it fails, run_validators stops there so a
+later validator that merely trips over the cut body (pdf_page_count raising on a half PDF) cannot downgrade the
+proven FULFILLMENT_FAILED into a suspected FULFILLMENT_UNVERIFIED.
+"""
 from __future__ import annotations
 
+import io
+import json
+import re
+from pathlib import Path
 from typing import Any, Callable
 
 import jsonschema
@@ -99,7 +108,143 @@ def content_hash(service: Service, args: dict[str, Any], art: Artifact) -> Valid
     return "content_hash", True, {"sha256": art.sha256, "recomputed": False}
 
 
+GATE = "not_truncated"
+_TEXTISH = re.compile(r"^(text/|application/(json|xml|javascript|x-www-form-urlencoded)$|application/.*\+(json|xml)$)")
+_PDF_OBJ_AT = re.compile(rb"\s*(xref|\d+\s+\d+\s+obj)")
+
+
+def _is_json_type(ct: str) -> bool:
+    return ct == "application/json" or ct.endswith("+json")
+
+
+def _raw_bytes(art: Artifact) -> bytes | None:
+    """The delivered bytes, or None for an inline JSON artifact (which parsed, so it is structurally whole)."""
+    return Path(art.path).read_bytes() if art.path else None
+
+
+def _pdf_problems(raw: bytes) -> list[str]:
+    problems: list[str] = []
+    if not raw.startswith(b"%PDF-"):
+        problems.append("no %PDF header")
+    if not raw.rstrip(b" \t\r\n\x0c\x00").endswith(b"%%EOF"):
+        problems.append("no %%EOF")
+    pos = raw.rfind(b"startxref")
+    if pos < 0:
+        problems.append("no startxref")
+    else:
+        m = re.match(rb"startxref\s+(\d+)", raw[pos:pos + 40])
+        offset = int(m.group(1)) if m else None
+        if offset is None:
+            problems.append("startxref has no offset")
+        elif offset >= len(raw):
+            problems.append(f"startxref offset {offset} beyond {len(raw)} bytes")
+        elif not _PDF_OBJ_AT.match(raw, offset):
+            problems.append(f"no xref at startxref offset {offset}")
+    try:
+        from pypdf import PdfReader
+
+        len(PdfReader(io.BytesIO(raw), strict=False).pages)
+    except Exception as e:  # noqa: BLE001  # pypdf's own exception zoo; any of them is evidence, never a crash
+        problems.append(f"pypdf: {type(e).__name__}: {str(e).strip() or 'unreadable'}"[:160])
+    return problems
+
+
+def _json_cut(raw: bytes) -> str | None:
+    """Why a non-parsing JSON body looks cut short (unbalanced brackets, open string), or None if it merely looks wrong."""
+    stack: list[int] = []
+    in_str = esc = False
+    pairs = {ord("{"): ord("}"), ord("["): ord("]")}
+    for b in raw:
+        if in_str:
+            if esc:
+                esc = False
+            elif b == 0x5C:  # backslash
+                esc = True
+            elif b == 0x22:  # quote
+                in_str = False
+        elif b == 0x22:
+            in_str = True
+        elif b in pairs:
+            stack.append(pairs[b])
+        elif b in (0x7D, 0x5D):  # } ]
+            if not stack or stack[-1] != b:
+                return None  # mismatched close: malformed, not merely cut
+            stack.pop()
+    if in_str:
+        return "unterminated string"
+    if stack:
+        return f"unbalanced brackets ({len(stack)} open)"
+    return None
+
+
+def _text_problems(raw: bytes) -> list[str]:
+    problems: list[str] = []
+    if raw.endswith(b"\x00"):
+        problems.append(f"trailing NUL padding ({len(raw) - len(raw.rstrip(b'\x00'))} bytes)")
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        if e.start >= len(raw) - 3 and "unexpected end" in e.reason:
+            problems.append(f"cut inside a UTF-8 multibyte sequence at byte {e.start}")
+    return problems
+
+
+def not_truncated(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
+    """Content-independent: was the whole deliverable received? Returns False (never raises) on every detected cut."""
+    received = art.received_length if art.received_length is not None else art.size
+    declared = art.declared_length
+    detail: dict[str, Any] = {"declared_length": declared, "received_length": received, "checks": {}}
+    checks = detail["checks"]
+    problems: list[str] = []
+    label = "body"
+    if declared is not None and declared != received:
+        checks["transport"] = f"{received} of {declared} declared bytes"
+        problems.append(checks["transport"])
+    elif declared is not None:
+        checks["transport"] = "length matches"
+    else:
+        checks["transport"] = "no Content-Length"
+    raw = _raw_bytes(art)
+    ct = art.content_type
+    malformed: str | None = None
+    if art.kind == "pdf" or ct == "application/pdf":
+        label = "pdf"
+        pdf = _pdf_problems(raw or b"")
+        checks["pdf"] = pdf or "intact"
+        problems = pdf + problems  # structural reason first, transport count last
+    elif _is_json_type(ct):
+        label = "json"
+        if art.kind == "json":
+            checks["json"] = "parses"
+        else:
+            raw = raw or b""
+            try:
+                json.loads(raw)
+                checks["json"] = "parses"
+            except (ValueError, RecursionError) as e:  # same pair store_artifact catches; a nested bomb must not raise
+                cut = _json_cut(raw) if raw.strip() else "empty body"
+                if cut:
+                    checks["json"] = cut
+                    problems = [cut] + problems
+                else:
+                    malformed = f"malformed json ({e})"[:160]
+                    checks["json"] = malformed
+    if raw is not None and _TEXTISH.match(ct):  # text-like only: zip/gzip/tar legitimately end in NUL bytes
+        text = _text_problems(raw)
+        if text:
+            checks["text"] = text
+            problems = problems + text
+    if malformed and not problems:
+        detail["reason"] = malformed  # does not parse, but nothing says it was cut: a seller bug, still a failed delivery
+        return GATE, False, detail
+    if problems:
+        detail["reason"] = f"{label} truncated ({'; '.join(problems)})"
+        return GATE, False, detail
+    return GATE, True, detail
+
+
 VALIDATORS: dict[str, Validator] = {
+    "not_truncated": not_truncated,
     "ticker_matches": ticker_matches,
     "content_type": content_type,
     "non_empty": non_empty,
@@ -115,4 +260,10 @@ def resolve(name: str) -> Validator:
 
 
 def run_validators(service: Service, args: dict[str, Any], artifact: Artifact) -> list[ValidatorResult]:
-    return [resolve(n)(service, args, artifact) for n in service.validators]
+    results: list[ValidatorResult] = []
+    for n in service.validators:
+        r = resolve(n)(service, args, artifact)
+        results.append(r)
+        if n == GATE and not r[1]:
+            break  # a cut body proves nothing further; stop before a later validator raises on it
+    return results

@@ -33,6 +33,10 @@ No escrow, no refunds, no fact-checking of purchased content, no universal MCP p
     uv run python -m payguard.server               # MCP server over stdio (Claude Desktop launches this)
     uv run pytest -q
 
+Demo switches on the seller (env, default off): `SELLER_STALL_S` (after-settle stall on `/research-slow`) and
+`SELLER_TRUNCATE_PATHS=/convert` (settled body cut to 60%; PayGuard reports a proven "pdf truncated" failure, see
+docs/pay-guard/demo/truncation.md).
+
 ## Install from Manufact
 
 PayGuard is not listed on Manufact. Manufact Cloud only hosts MCP servers reached over HTTPS, and PayGuard runs locally over stdio so wallet keys never leave your machine. Details and options: docs/pay-guard/demo/manufact.md.
