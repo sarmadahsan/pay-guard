@@ -15,7 +15,7 @@ from payguard.models import (
 from payguard.response import safe_next_actions
 
 PAID_TOOLS = ("get_company_report", "get_research_report", "convert_document")
-ADMIN_TOOLS = ("list_services", "get_spending_policy", "get_purchase", "list_findings", "reconcile_purchase")
+ADMIN_TOOLS = ("list_services", "get_spending_policy", "get_purchase", "list_findings", "list_purchases", "reconcile_purchase")
 
 
 async def test_mcp_schema_has_no_force_retry_and_no_approve_retry():
@@ -23,12 +23,13 @@ async def test_mcp_schema_has_no_force_retry_and_no_approve_retry():
 
     tools = {t.name: t for t in await mcp.list_tools()}
     names = set(tools)
-    assert set(PAID_TOOLS) <= names and set(ADMIN_TOOLS) <= names
+    assert names == set(PAID_TOOLS) | set(ADMIN_TOOLS), names  # a new tool must be classified here before it ships
     assert "approve_retry" not in names and not any("approve" in n or "force" in n for n in names)
-    for n in PAID_TOOLS:
+    for n in names:
         props = set(tools[n].parameters["properties"])
-        assert {"purchase_intent_id", "task_id"} <= props, (n, props)
         assert not any("force" in p.lower() or "retry" in p.lower() for p in props), (n, props)
+        if n in PAID_TOOLS:
+            assert {"purchase_intent_id", "task_id"} <= props, (n, props)
 
 
 def test_vocabulary_has_no_pay_or_retry():
@@ -38,8 +39,7 @@ def test_vocabulary_has_no_pay_or_retry():
 
 @pytest.mark.parametrize("status,fulfillment,codes", list(itertools.product(
     list(PaymentStatus), list(FulfillmentStatus),
-    [(), (FindingCode.PAID_NO_DELIVERY,), (FindingCode.FULFILLMENT_FAILED,), (FindingCode.DUPLICATE_SUSPECTED,),
-     (FindingCode.SETTLEMENT_UNKNOWN,), (FindingCode.PRICE_MISMATCH, FindingCode.DUPLICATE_SUSPECTED)])))
+    [(), *((c,) for c in FindingCode), (FindingCode.PRICE_MISMATCH, FindingCode.DUPLICATE_SUSPECTED)])))
 def test_safe_next_actions_never_pays(status, fulfillment, codes):
     row = Purchase.new(principal_id="p", task_id=None, purchase_intent_id="i", request_fingerprint="f" * 64,
                        service_id="report", args={}, network="eip155:84532")
