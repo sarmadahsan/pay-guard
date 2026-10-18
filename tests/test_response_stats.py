@@ -72,15 +72,15 @@ def test_partial_none_and_unverified_levels(deps):
 
 async def test_list_purchases_newest_first_with_levels(deps, seller):
     a = await purchase(deps, "report", {"ticker": "ACME"}, "i1")
-    b = await purchase(deps, "report_premium", {"ticker": "ACME"}, "i2")
+    b = await purchase(deps, "research", {"topic": "t"}, "i2")
     rows = deps.repo.list_purchases("test", limit=10)
     assert [r.purchase_id for r in rows] == [b["purchase_id"], a["purchase_id"]]
     assert len(deps.repo.list_purchases("test", limit=1)) == 1
     assert deps.repo.list_purchases("someone-else") == []
-    c = compact_purchase(deps, rows[1])
+    c = compact_purchase(deps, rows[0])
     assert set(c) >= {"purchase_id", "service_id", "payment_status", "fulfillment_status", "delivery_level",
                       "amount_usdc", "settlement_tx", "explorer_url", "created_at"}
-    assert c["delivery_level"] == "verified" and c["amount_usdc"] == "0.500000"
+    assert c["delivery_level"] == "verified" and c["amount_usdc"] == "0.750000"
 
 
 def test_usdc_is_integer_formatted_and_handles_negatives():

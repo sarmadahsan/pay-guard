@@ -94,8 +94,7 @@ def transaction_summary(row: Purchase, evidence: list[Any]) -> list[dict[str, An
         settle = [e.payload for e in evidence if e.kind == EvidenceKind.SETTLEMENT]
         last = settle[-1] if settle else {}
         proof = "chain_check" if str(last.get("source", "")).startswith("chain") else "seller_receipt"
-        return [{**base, "status": "settled", "proof": proof, "block_number": last.get("block_number"),
-                 "settlement_tx": row.settlement_tx or last.get("transaction")}]
+        return [{**base, "status": "settled", "proof": proof, "block_number": last.get("block_number")}]
     if row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:
         return [{**base, "status": "unknown", "proof": "pending", "explorer_url": None}]
     if row.payment_status in (PaymentStatus.PAYLOAD_SIGNED, PaymentStatus.SENT):
@@ -120,7 +119,7 @@ def compact_purchase(deps: Any, row: Purchase) -> dict[str, Any]:
             "attempt": row.attempt, "payment_status": "IN_PROGRESS" if row.payment_status in IN_FLIGHT else str(row.payment_status),
             "fulfillment_status": str(row.fulfillment_status),
             "delivery_level": delivery_summary(row, verification, findings)["level"],
-            "amount_usdc": usdc(row.authorized_amount_minor), "settlement_tx": tx[0]["settlement_tx"] if tx else row.settlement_tx,
+            "amount_usdc": usdc(row.authorized_amount_minor), "settlement_tx": row.settlement_tx,
             "proof": tx[0]["proof"] if tx else None, "explorer_url": explorer_url(row),
             "unresolved_findings": [f.code for f in findings if f.resolved_at is None], "created_at": row.created_at}
 
