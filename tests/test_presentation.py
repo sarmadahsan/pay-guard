@@ -14,7 +14,7 @@ from tests.conftest import FakeSeller
 
 UI_FILE = Path(__file__).resolve().parents[1] / "payguard" / "ui" / "purchases.html"
 UI_TOOLS = {"get_company_report", "get_research_report", "convert_document", "get_purchase", "list_purchases",
-            "reconcile_purchase"}
+            "reconcile_purchase", "file_dispute", "check_dispute"}
 TX = "0x17a2" + "0" * 53 + "3931e"
 
 

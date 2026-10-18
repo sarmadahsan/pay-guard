@@ -97,6 +97,8 @@ class EvidenceKind(StrEnum):
     RETRY_BLOCKED = "retry_blocked"
     ARTIFACT = "artifact"
     VALIDATOR = "validator"
+    DISPUTE = "dispute"  # agent-filed complaint to the seller (Task 8.5); never money
+    DISPUTE_REPLY = "dispute_reply"  # the seller's reply, surfaced for a human; never resolves a finding by itself
 
 
 class NextAction:
