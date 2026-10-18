@@ -41,6 +41,24 @@
   },
   "tools": [
     {
+      "name": "check_dispute",
+      "description": "Check whether the seller replied to a filed dispute. Records any reply as evidence and surfaces it for a human; never resolves the finding or pays anything.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "name": "convert_document",
       "description": "Convert a document to a PDF with the given page count: $2.00 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
       "parameters": {
@@ -76,6 +94,24 @@
           "doc_id",
           "pages",
           "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "file_dispute",
+      "description": "File a dispute with the seller for a purchase that has an unresolved proven finding (paid but nothing delivered, delivery failed checks, or overcharged): emails the seller's agent from PayGuard's own inbox with the redacted evidence attached and records the thread. One dispute per purchase; moves no money.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id"
         ],
         "type": "object"
       }
