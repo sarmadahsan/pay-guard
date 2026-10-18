@@ -3,7 +3,7 @@
 Creates attempt = latest + 1 for the same (principal, intent, fingerprint) key, runs design §3 steps 2-7, and
 lifts the service's PAID_NO_DELIVERY quarantine only if the new payment SETTLED. It counts against the budget.
 
-Do not run while the MCP server is buying: the budget lock is per-process.
+Do not run while the MCP server or another approve_retry is buying: the budget lock is per-process.
 
 Usage: uv run python scripts/approve_retry.py <purchase_id> [--reason "..."]
 """
@@ -67,7 +67,7 @@ async def main() -> int:
         new = repo.create_purchase(Purchase.new(
             principal_id=prior.principal_id, task_id=prior.task_id, purchase_intent_id=prior.purchase_intent_id,
             request_fingerprint=prior.request_fingerprint, service_id=prior.service_id, args=prior.args,
-            network=prior.network, attempt=latest.attempt + 1,
+            network=service.network, attempt=latest.attempt + 1,
             supersedes_purchase_id=latest.purchase_id, approved_by="cli"))
     except DuplicateKeyError:
         print("refused: another approval already took the next attempt number; re-check with list_purchases")
