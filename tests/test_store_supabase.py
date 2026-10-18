@@ -276,3 +276,18 @@ def test_postgrest_wire_format_of_queries_we_rely_on():
     sel = client.table("findings").select(FINDING_JOIN).eq("purchases.principal_id", "p").request
     assert unquote(sel.params["select"]).startswith("*,purchases!inner(principal_id,service_id,")
     assert sel.params["purchases.principal_id"] == "eq.p"
+
+
+@pytest.mark.parametrize("code", ["42P01", "PGRST205"])
+def test_reset_tolerates_missing_wallet_audit_table(code):
+    # _purchase_ids page (empty) -> purchases delete -> wallet_audit delete fails: schema not applied
+    repo, client = fake_repo([], [], APIError({"code": code, "message": "relation wallet_audit does not exist"}))
+    assert repo.reset("alice") == {"purchases": 0, "evidence": 0, "findings": 0}
+    assert ("table", "wallet_audit") in client.calls[-1]
+
+
+def test_reset_propagates_other_wallet_audit_errors():
+    """A failed delete on an existing table must not leave a stale wallet baseline behind silently (#88 review)."""
+    repo, _ = fake_repo([], [], APIError({"code": "42501", "message": "permission denied"}))
+    with pytest.raises(APIError):
+        repo.reset("alice")

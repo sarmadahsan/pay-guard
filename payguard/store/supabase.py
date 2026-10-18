@@ -51,6 +51,7 @@ JSON_COLS = {"args", "history"}
 INT_COLS = ("attempt", "quoted_amount_minor", "authorized_amount_minor", "valid_before")
 PURCHASE_FIELDS = tuple(Purchase.__dataclass_fields__)
 UNIQUE_VIOLATION = "23505"  # Postgres SQLSTATE
+MISSING_TABLE = {"42P01", "PGRST205"}  # Postgres undefined_table; PostgREST "table not in schema cache"
 HISTORY_WRITE_ATTEMPTS = 5
 RETRY_JITTER_S = (0.01, 0.05)  # per attempt; desynchronises two processes retrying together
 PAGE_SIZE = 1000  # Supabase's default max-rows; _select_all also copes with a lower server cap
@@ -363,5 +364,7 @@ class SupabaseRepository:
         try:  # the wallet baseline (issue #87); a database without the wallet_audit table has none to clear
             self._t("wallet_audit").delete().eq("principal_id", principal_id).execute()
         except APIError as e:
-            log.warning("reset: could not clear wallet_audit for %s: %s", principal_id, e)
+            if getattr(e, "code", None) not in MISSING_TABLE:
+                raise  # the table exists but the delete failed: a stale baseline would outlive the reset
+            log.warning("reset: wallet_audit table missing (schema not applied) for %s: %s", principal_id, e)
         return {"purchases": pu, "evidence": ev, "findings": fi}

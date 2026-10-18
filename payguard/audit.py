@@ -71,9 +71,32 @@ def _merge(state: dict[str, Any], scan: Any) -> dict[str, Any]:
 
 # ---- matching (pure) ----------------------------------------------------------------------------------------
 
-def _payment_payload(repo: Any, purchase_id: str) -> dict[str, Any] | None:
-    rows = [e for e in repo.list_evidence(purchase_id) if e.kind == EvidenceKind.PAYMENT_PAYLOAD]
-    return rows[-1].payload if rows else None
+def _load_candidates(repo: Any, rows: list[Purchase], address: str
+                     ) -> tuple[list[tuple[Purchase, dict[str, Any] | None]], set[str]]:
+    """Rows that could explain an outflow, with their signed payload, and the ids that already have chain proof.
+    One evidence read per such row and audit (store reads are synchronous; the RPC budget does not bound them)."""
+    address = address.lower()
+    candidates: list[tuple[Purchase, dict[str, Any] | None]] = []
+    proven: set[str] = set()
+    for r in rows:
+        if r.payment_status not in MATCHABLE_STATES or not r.pay_to or r.authorized_amount_minor is None:
+            continue  # cannot match an outflow: no store read
+        evidence = repo.list_evidence(r.purchase_id)
+        payloads = [e.payload for e in evidence if e.kind == EvidenceKind.PAYMENT_PAYLOAD]
+        pp = payloads[-1] if payloads else None
+        if pp is not None and str(pp.get("from", address)).lower() != address:
+            continue  # signed by another wallet
+        candidates.append((r, pp))
+        if any(e.kind == EvidenceKind.SETTLEMENT and str(e.payload.get("source", "")).startswith("chain") for e in evidence):
+            proven.add(r.purchase_id)
+    return candidates, proven
+
+
+def _open_not_on_chain(repo: Any, principal: str, rows: list[Purchase]) -> set[str]:
+    """Purchase ids with an unresolved SETTLEMENT_NOT_ON_CHAIN finding: one store query, not one per row."""
+    ids = {r.purchase_id for r in rows}
+    return {f["purchase_id"] for f in repo.list_findings(principal, unresolved_only=True)
+            if f["code"] == FindingCode.SETTLEMENT_NOT_ON_CHAIN and f["purchase_id"] in ids}
 
 
 def _matches(o: dict[str, Any], row: Purchase, pp: dict[str, Any] | None) -> bool:
@@ -101,16 +124,8 @@ def match_outflows(outflows: list[dict[str, Any]], candidates: list[tuple[Purcha
     return matched, unmatched
 
 
-def _evaluate(repo: Any, state: dict[str, Any], rows: list[Purchase], bal: Any) -> dict[str, Any]:
-    address = state["address"].lower()
-    candidates = []
-    for r in rows:
-        if r.payment_status not in MATCHABLE_STATES:
-            continue
-        pp = _payment_payload(repo, r.purchase_id)
-        if pp is not None and str(pp.get("from", address)).lower() != address:
-            continue  # signed by another wallet
-        candidates.append((r, pp))
+def _evaluate(state: dict[str, Any], rows: list[Purchase], candidates: list[tuple[Purchase, dict[str, Any] | None]],
+              bal: Any) -> dict[str, Any]:
     matched, unexplained = match_outflows(state["outflows"], candidates)
     since = [r for r in rows if r.created_at >= state["baseline_ts"]]
     settled_unmatched = [r for r in since if r.payment_status == P.SETTLED and r.purchase_id not in matched]
@@ -129,31 +144,28 @@ def _evaluate(repo: Any, state: dict[str, Any], rows: list[Purchase], bal: Any) 
 
 # ---- writes (evidence and findings only) -----------------------------------------------------------------------
 
-def _has_chain_settlement(repo: Any, purchase_id: str) -> bool:
-    return any(e.kind == EvidenceKind.SETTLEMENT and str(e.payload.get("source", "")).startswith("chain")
-               for e in repo.list_evidence(purchase_id))
-
-
-def _open_finding(repo: Any, purchase_id: str, code: str) -> bool:
-    return any(f.code == code and f.resolved_at is None for f in repo.findings_for_purchase(purchase_id))
-
-
-def _record(repo: Any, network: str, state: dict[str, Any], view: dict[str, Any], bal: Any) -> None:
+def _record(repo: Any, network: str, state: dict[str, Any], view: dict[str, Any], bal: Any,
+            proven: set[str], open_noc: set[str]) -> None:
+    """Writes evidence and findings; keeps proven / open_noc (unresolved SETTLEMENT_NOT_ON_CHAIN ids) current."""
     for pid, o in view["matched"].items():
         row = view["rows"][pid]
         if row.payment_status != P.SETTLED:
             continue  # in-flight rows are reconcile's business (CAS); the audit never changes a status
-        if not _has_chain_settlement(repo, pid):
+        if pid not in proven:
+            proven.add(pid)
             repo.add_evidence(pid, EvidenceKind.SETTLEMENT, {
                 "source": CHAIN_SOURCE, "transaction": o["tx"], "block_number": o["block"], "network": network,
                 "from": state["address"], "to": o["to"], "value": str(o["value_minor"]),
                 "seller_reported_tx": row.settlement_tx})
-        repo.resolve_findings(pid, FindingCode.SETTLEMENT_NOT_ON_CHAIN)
+        if pid in open_noc:
+            repo.resolve_findings(pid, FindingCode.SETTLEMENT_NOT_ON_CHAIN)
+            open_noc.discard(pid)
     if int(state["cursor_block"]) < int(bal.block_number):
         return  # the scan has not covered the balance block: absence is not proven yet
     for row in view["settled_unmatched"]:
-        if row.purchase_id in view["recent"] or _open_finding(repo, row.purchase_id, FindingCode.SETTLEMENT_NOT_ON_CHAIN):
+        if row.purchase_id in view["recent"] or row.purchase_id in open_noc:
             continue
+        open_noc.add(row.purchase_id)
         ev = repo.add_evidence(row.purchase_id, EvidenceKind.CHAIN_CHECK, {
             "source": "wallet_audit", "network": network, "from": state["address"], "to": row.pay_to,
             "value": str(row.authorized_amount_minor), "seller_reported_tx": row.settlement_tx,
@@ -188,8 +200,9 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
 
-def _network_block(repo: Any, network: str, state: dict[str, Any], view: dict[str, Any], bal: Any) -> dict[str, Any]:
-    not_on_chain = [pid for pid in view["rows"] if _open_finding(repo, pid, FindingCode.SETTLEMENT_NOT_ON_CHAIN)]
+def _network_block(network: str, state: dict[str, Any], view: dict[str, Any], bal: Any,
+                   open_noc: set[str]) -> dict[str, Any]:
+    not_on_chain = [pid for pid in view["rows"] if pid in open_noc]  # includes rows from before a later baseline
     outflows = [_outflow_finding(network, o) for o in view["unexplained"]]
     caught_up = int(state["cursor_block"]) >= int(bal.block_number)
     if outflows or not_on_chain or not view["balanced"]:
@@ -276,16 +289,18 @@ async def _audit_network(deps: Any, network: str, deadline: float, scan: bool) -
     if state is None or str(state.get("address", "")).lower() != address.lower():
         state = repo.save_wallet_state(principal, network, _baseline(address, bal), create_only=state is None)
     rows = _rows(deps, network)
-    view = _evaluate(repo, state, rows, bal)
+    candidates, proven = _load_candidates(repo, rows, state["address"])
+    open_noc = _open_not_on_chain(repo, principal, rows)
+    view = _evaluate(state, rows, candidates, bal)
     behind = int(state["cursor_block"]) < int(bal.block_number)
     if scan and behind and deps.transfer_reader is not None and (not view["balanced"] or view["settled_unmatched"]):
         result = await deps.transfer_reader(network, address, int(state["cursor_block"]) + 1, int(bal.block_number),
                                             stop_at=deadline)
         state = _merge(state, result)
         repo.save_wallet_state(principal, network, state)
-        view = _evaluate(repo, state, rows, bal)
-    _record(repo, network, state, view, bal)
-    return _network_block(repo, network, state, view, bal)
+        view = _evaluate(state, rows, candidates, bal)
+    _record(repo, network, state, view, bal, proven, open_noc)
+    return _network_block(network, state, view, bal, open_noc)
 
 
 async def audit_wallet(deps: Any, *, scan: bool = True, budget_s: float = AUDIT_BUDGET_S) -> dict[str, Any]:

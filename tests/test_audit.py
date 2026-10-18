@@ -405,3 +405,47 @@ async def test_incomplete_scan_does_not_prove_absence(adeps, fc, seller):
     assert not adeps.repo.has_finding(r["purchase_id"], FindingCode.SETTLEMENT_NOT_ON_CHAIN)
     assert w["networks"][0]["scanned_to_block"] < fc.block
 
+
+
+# ---- review (#88): bounded store reads; findings from before a later baseline -----------------------------------
+
+class CountingRepo:
+    """Wraps a repository and counts per-row reads."""
+
+    def __init__(self, inner):
+        self.inner, self.calls = inner, {"list_evidence": 0, "findings_for_purchase": 0, "list_findings": 0}
+
+    def __getattr__(self, name):
+        attr = getattr(self.inner, name)
+        if name in self.calls:
+            def counted(*a, **kw):
+                self.calls[name] += 1
+                return attr(*a, **kw)
+            return counted
+        return attr
+
+
+async def test_audit_store_reads_are_bounded(adeps, fc, seller):
+    for i in range(3):
+        await buy_and_settle_on_chain(adeps, fc, seller, intent=f"i{i}", ticker=f"T{i}")
+    fc.ts_offset = 0
+    seller.price_override = 9_000_000  # over the per-purchase cap: REJECTED rows cannot match an outflow
+    await buy(adeps, intent="rej", ticker="REJ")
+    await audit.audit_wallet(adeps)  # proves the three settled rows (one scan)
+    counting = CountingRepo(adeps.repo)
+    w = await audit.audit_wallet(dataclasses.replace(adeps, repo=counting))
+    assert w["status"] == "ok"
+    assert counting.calls["findings_for_purchase"] == 0 and counting.calls["list_findings"] == 1
+    assert counting.calls["list_evidence"] == 3  # one per matchable row, none for the rejected row, none repeated
+
+
+async def test_flag_from_before_a_later_baseline_is_still_reported(adeps, fc, seller):
+    r = await buy(adeps)
+    fc.ts_offset = audit.NOT_ON_CHAIN_GRACE_S + 5
+    fc.block += 2
+    await audit.audit_wallet(adeps)
+    assert adeps.repo.has_finding(r["purchase_id"], FindingCode.SETTLEMENT_NOT_ON_CHAIN)
+    state = adeps.repo.get_wallet_state("test", SEPOLIA)
+    adeps.repo.save_wallet_state("test", SEPOLIA, {**state, "address": "0x" + "00" * 20})  # forces a fresh baseline
+    w = await audit.audit_wallet(adeps)
+    assert w["networks"][0]["settlements_not_on_chain"] == [r["purchase_id"]] and w["status"] == "drift"
