@@ -25,6 +25,8 @@ from x402.http.types import PaymentOption, RouteConfig
 from x402.mechanisms.evm.exact import ExactEvmServerScheme
 from x402.server import x402ResourceServer
 
+from sellers.stall import make_stall_hook
+
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 log = logging.getLogger("sellers")
@@ -68,6 +70,7 @@ ROUTES = {
 }
 
 server = build_server()
+server.on_after_settle(make_stall_hook(float(os.environ.get("SELLER_STALL_S", "90"))))
 app = FastAPI(title="PayGuard demo sellers")
 _middleware = payment_middleware(ROUTES, server)
 
