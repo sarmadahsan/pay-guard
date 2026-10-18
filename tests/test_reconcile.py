@@ -536,3 +536,146 @@ async def test_row_moved_out_of_unknown_by_resend_classification_skips_the_post_
     assert got.payment_status == "PAYMENT_FAILED"
     assert len(reader.calls) == calls_before + 5  # the 5 pre-resend polls only
     assert hist(deps, r["purchase_id"])[-1] == "PAYMENT_FAILED"  # no still_unknown entry after it
+
+
+# ---- single-flight reconcile per purchase (#74) --------------------------------------------------------------
+
+def gated_reader(state, gate=None, delay_s=0.01):
+    """Fake chain reader that yields to the loop before answering (or waits for `gate`). Records calls."""
+    import asyncio
+
+    calls = []
+
+    async def reader(network, from_addr, nonce, pay_to, value_minor, since_ts):
+        calls.append(nonce)
+        if gate is not None:
+            await gate.wait()
+        else:
+            await asyncio.sleep(delay_s)
+        return state
+
+    reader.calls = calls
+    return reader
+
+
+async def _unknown_row(make_deps):
+    """A SETTLEMENT_UNKNOWN row: original paid send + the first call's single resend, chain says not used."""
+    seller = FakeSeller(mode="timeout")
+    deps = make_deps(seller, chain_reader=chain_seq(st(False, 1, int(time.time()))))
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and len(seller.paid) == 2
+    return deps, seller, deps.repo.get_purchase(r["purchase_id"])
+
+
+def _kinds(deps, pid):
+    return [e.kind for e in deps.repo.list_evidence(pid)]
+
+
+async def test_concurrent_reconciles_of_one_row_resend_once(make_deps):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    reader = gated_reader(st(False, 2, int(time.time())))
+    deps.chain_reader = reader
+    seller.paid_modes = ["ok"]  # the (single) resend delivers
+    paid_before, kinds_before = len(seller.paid), _kinds(deps, row.purchase_id)
+    a, b = await asyncio.gather(reconcile(deps, row, time.monotonic() + 45), reconcile(deps, row, time.monotonic() + 45))
+    kinds = _kinds(deps, row.purchase_id)
+    assert len(seller.paid) == paid_before + 1  # exactly one resend across both callers
+    assert kinds.count("resend") == kinds_before.count("resend") + 1
+    assert kinds.count("chain_check") == kinds_before.count("chain_check") + 1
+    assert len(reader.calls) == rc.POLL_ATTEMPTS  # only the leader read the chain
+    assert a.payment_status == b.payment_status == "SETTLED"
+    assert "reconcile_joined" in hist(deps, row.purchase_id)
+    assert rc._RUNNING == {}
+
+
+async def test_concurrent_reconcile_and_finish_settles_and_verifies_once(make_deps):
+    import asyncio
+
+    from payguard.purchase import reconcile_and_finish
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    reader = gated_reader(st(True, 9, int(time.time())))
+    deps.chain_reader = reader
+    paid_before, kinds_before = len(seller.paid), _kinds(deps, row.purchase_id)
+    a, b = await asyncio.gather(reconcile_and_finish(deps, row, time.monotonic() + 45),
+                                reconcile_and_finish(deps, row, time.monotonic() + 45))
+    kinds = _kinds(deps, row.purchase_id)
+    assert a.payment_status == b.payment_status == "SETTLED" and a.settlement_tx == b.settlement_tx == TX
+    assert a.fulfillment_status == b.fulfillment_status == "NO_DELIVERY"
+    assert kinds.count("settlement") == kinds_before.count("settlement") + 1 == 1
+    assert kinds.count("chain_check") == kinds_before.count("chain_check") + 1
+    assert len(reader.calls) == 1 and len(seller.paid) == paid_before
+    assert [c for c, _ in codes(deps, row.purchase_id)].count("PAID_NO_DELIVERY") == 1  # verification ran once
+    assert hist(deps, row.purchase_id).count("SETTLED") == 1
+    assert rc._RUNNING == {}
+
+
+async def test_joiner_respects_its_own_deadline_and_never_cancels_the_leader(make_deps):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    gate = asyncio.Event()
+    reader = gated_reader(st(True, 9, int(time.time())), gate=gate)
+    deps.chain_reader = reader
+    leader = asyncio.create_task(reconcile(deps, row, time.monotonic() + 45))
+    while not reader.calls:  # the leader is now blocked inside its first chain read
+        await asyncio.sleep(0)
+    t0 = time.monotonic()
+    joined = await reconcile(deps, row, time.monotonic() + 0.1)
+    assert time.monotonic() - t0 < 1.0
+    assert joined.payment_status == "SETTLEMENT_UNKNOWN" and not leader.done()
+    assert len(reader.calls) == 1  # the joiner did not read the chain itself
+    assert await reconcile(deps, row, time.monotonic() - 1) is not None  # an already-expired joiner does not wait
+    gate.set()
+    done = await leader
+    assert done.payment_status == "SETTLED" and done.settlement_tx == TX
+    assert rc._RUNNING == {}
+
+
+async def test_registry_is_cleared_when_the_leader_raises_or_is_cancelled(make_deps, monkeypatch):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    real = rc._reconcile
+    started = asyncio.Event()
+
+    async def boom(*_a, **_k):
+        started.set()
+        await asyncio.sleep(0.01)
+        raise RuntimeError("reconcile bug")
+
+    monkeypatch.setattr(rc, "_reconcile", boom)
+    leader = asyncio.create_task(reconcile(deps, row, time.monotonic() + 45))
+    await started.wait()
+    joined = await reconcile(deps, row, time.monotonic() + 45)  # a joiner never sees the leader's exception
+    assert joined.payment_status == "SETTLEMENT_UNKNOWN"
+    with pytest.raises(RuntimeError, match="reconcile bug"):
+        await leader
+    assert rc._RUNNING == {}
+
+    async def hang(*_a, **_k):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rc, "_reconcile", hang)
+    leader = asyncio.create_task(reconcile(deps, row, time.monotonic() + 45))
+    await asyncio.sleep(0)
+    assert row.purchase_id in rc._RUNNING
+    leader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await leader
+    assert rc._RUNNING == {}
+
+    monkeypatch.setattr(rc, "_reconcile", real)  # a later reconcile runs normally
+    deps.chain_reader = chain_seq(st(True, 9, int(time.time())))
+    got = await reconcile(deps, row, time.monotonic() + 45)
+    assert got.payment_status == "SETTLED" and rc._RUNNING == {}
