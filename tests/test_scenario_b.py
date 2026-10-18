@@ -29,8 +29,10 @@ async def test_scenario_b_end_to_end(make_deps):
 
     reworded = await purchase(deps, "research", {"topic": "payments by agents"}, "demo-research-3")
     assert reworded["payment_status"] == "REJECTED" and reworded["reject_reason"] == "SERVICE_QUARANTINED"
+    assert [f["code"] for f in reworded["findings"]] == ["SERVICE_QUARANTINED"]
     assert reworded["safe_next_actions"] == ["human_review"]
 
+    assert len(seller.paid) == 1  # nonce consumed on chain, so reconcile never resends (reconcile.py step 3 resends only if unused)
     assert len({q.headers["PAYMENT-SIGNATURE"] for q in seller.paid}) == 1  # exactly one authorization ever signed
     for resp in (first, same, new_intent, reworded):
         for f in resp["findings"]:
