@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -78,12 +79,18 @@ PURCHASE_COLS = (
     "settlement_tx", "valid_before", "artifact_hash", "reject_reason", "history", "created_at", "updated_at",
 )
 JSON_COLS = {"args", "history"}
-PROTECTED_COLS = {"purchase_id", "payment_status", "history", "principal_id"}
+PROTECTED_COLS = {
+    "purchase_id", "payment_status", "history", "principal_id", "request_fingerprint",
+    "purchase_intent_id", "attempt", "service_id", "created_at",
+}
+FULFILLMENT_PROTECTED = PROTECTED_COLS | {"fulfillment_status", "authorized_amount_minor"}
 
 
 def _enc(col: str, v: Any) -> Any:
-    if col in JSON_COLS or isinstance(v, (dict, list)):
+    if col in JSON_COLS:
         return json.dumps(v)
+    if isinstance(v, (dict, list)):
+        raise TypeError(f"column {col!r} does not accept {type(v).__name__}")
     if isinstance(v, (PaymentStatus, FulfillmentStatus)):
         return str(v)
     return v
@@ -106,6 +113,20 @@ def _finding(r: sqlite3.Row) -> Finding:
     )
 
 
+class _Res:
+    """Rows and rowcount captured while the connection lock was held."""
+
+    def __init__(self, rows: list[Any], rowcount: int) -> None:
+        self._rows = rows
+        self.rowcount = rowcount
+
+    def fetchone(self) -> Any:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[Any]:
+        return self._rows
+
+
 class SqliteRepository:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
@@ -115,6 +136,14 @@ class SqliteRepository:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(SCHEMA)
+        # One shared connection: serialize execute + fetch/rowcount so threads cannot interleave.
+        self._lock = threading.RLock()
+
+    def _q(self, sql: str, params: Any = ()) -> _Res:
+        with self._lock:
+            cur = self.conn.execute(sql, params)
+            rows = cur.fetchall() if cur.description else []
+            return _Res(rows, cur.rowcount)
 
     # ---- purchases -------------------------------------------------------
     def create_purchase(self, row: Purchase) -> Purchase:
@@ -122,25 +151,27 @@ class SqliteRepository:
         cols = ", ".join(PURCHASE_COLS)
         marks = ", ".join("?" for _ in PURCHASE_COLS)
         try:
-            self.conn.execute(f"INSERT INTO purchases ({cols}) VALUES ({marks})",
+            self._q(f"INSERT INTO purchases ({cols}) VALUES ({marks})",
                               [_enc(c, d[c]) for c in PURCHASE_COLS])
         except sqlite3.IntegrityError as e:
-            raise DuplicateKeyError(str(e)) from e
+            if "UNIQUE constraint failed" in str(e) or "PRIMARY KEY" in str(e):
+                raise DuplicateKeyError(str(e)) from e
+            raise
         return self.get_purchase(row.purchase_id)  # type: ignore[return-value]
 
     def get_purchase(self, purchase_id: str) -> Purchase | None:
-        r = self.conn.execute("SELECT * FROM purchases WHERE purchase_id = ?", (purchase_id,)).fetchone()
+        r = self._q("SELECT * FROM purchases WHERE purchase_id = ?", (purchase_id,)).fetchone()
         return _row(r) if r else None
 
     def find_by_key(self, principal_id: str, purchase_intent_id: str, request_fingerprint: str) -> list[Purchase]:
-        rows = self.conn.execute(
+        rows = self._q(
             "SELECT * FROM purchases WHERE principal_id = ? AND purchase_intent_id = ? AND request_fingerprint = ? ORDER BY attempt",
             (principal_id, purchase_intent_id, request_fingerprint),
         ).fetchall()
         return [_row(r) for r in rows]
 
     def find_recent_by_fingerprint(self, principal_id: str, request_fingerprint: str, since_ts: float) -> list[Purchase]:
-        rows = self.conn.execute(
+        rows = self._q(
             "SELECT * FROM purchases WHERE principal_id = ? AND request_fingerprint = ? AND created_at >= ? ORDER BY created_at DESC",
             (principal_id, request_fingerprint, since_ts),
         ).fetchall()
@@ -162,14 +193,14 @@ class SqliteRepository:
             sets.append(f"{k} = ?")
             params.append(_enc(k, v))
         params += [purchase_id, str(expected)]
-        cur = self.conn.execute(
+        cur = self._q(
             f"UPDATE purchases SET {', '.join(sets)} WHERE purchase_id = ? AND payment_status = ?", params
         )
         return cur.rowcount == 1
 
     def set_fulfillment(self, purchase_id: str, status: FulfillmentStatus,
                         history_entry: dict[str, Any] | None = None, **fields: Any) -> None:
-        bad = [k for k in fields if k not in PURCHASE_COLS or k in PROTECTED_COLS or k == "fulfillment_status"]
+        bad = [k for k in fields if k not in PURCHASE_COLS or k in FULFILLMENT_PROTECTED]
         if bad:
             raise ValueError(f"cannot set columns {bad} through set_fulfillment")
         sets = ["fulfillment_status = ?", "updated_at = ?"]
@@ -181,17 +212,17 @@ class SqliteRepository:
             sets.append(f"{k} = ?")
             params.append(_enc(k, v))
         params.append(purchase_id)
-        self.conn.execute(f"UPDATE purchases SET {', '.join(sets)} WHERE purchase_id = ?", params)
+        self._q(f"UPDATE purchases SET {', '.join(sets)} WHERE purchase_id = ?", params)
 
     def append_history(self, purchase_id: str, entry: dict[str, Any]) -> None:
-        self.conn.execute(
+        self._q(
             "UPDATE purchases SET history = json_insert(history, '$[#]', json(?)), updated_at = ? WHERE purchase_id = ?",
             (json.dumps(entry), now(), purchase_id),
         )
 
     def list_stuck(self, older_than_s: float) -> list[Purchase]:
         marks = ", ".join("?" for _ in IN_FLIGHT)
-        rows = self.conn.execute(
+        rows = self._q(
             f"SELECT * FROM purchases WHERE payment_status IN ({marks}) AND updated_at < ? ORDER BY updated_at",
             [str(s) for s in IN_FLIGHT] + [now() - older_than_s],
         ).fetchall()
@@ -199,7 +230,7 @@ class SqliteRepository:
 
     def spent_minor(self, principal_id: str) -> int:
         marks = ", ".join("?" for _ in BUDGET_STATES)
-        r = self.conn.execute(
+        r = self._q(
             f"SELECT COALESCE(SUM(authorized_amount_minor), 0) FROM purchases WHERE principal_id = ? AND payment_status IN ({marks})",
             [principal_id] + [str(s) for s in BUDGET_STATES],
         ).fetchone()
@@ -208,14 +239,14 @@ class SqliteRepository:
     # ---- evidence --------------------------------------------------------
     def add_evidence(self, purchase_id: str, kind: str, payload: dict[str, Any]) -> str:
         eid = new_id()
-        self.conn.execute(
+        self._q(
             "INSERT INTO evidence (evidence_id, purchase_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)",
             (eid, purchase_id, str(kind), json.dumps(payload, default=str), now()),
         )
         return eid
 
     def list_evidence(self, purchase_id: str) -> list[Evidence]:
-        rows = self.conn.execute(
+        rows = self._q(
             "SELECT * FROM evidence WHERE purchase_id = ? ORDER BY created_at, rowid", (purchase_id,)
         ).fetchall()
         return [Evidence(r["evidence_id"], r["purchase_id"], r["kind"], json.loads(r["payload"]), r["created_at"]) for r in rows]
@@ -224,22 +255,22 @@ class SqliteRepository:
     def add_finding(self, purchase_id: str, code: str, severity: str, summary: str,
                     evidence_ids: list[str], safe_next_actions: list[str]) -> str:
         fid = new_id()
-        self.conn.execute(
+        self._q(
             "INSERT INTO findings (finding_id, purchase_id, code, severity, summary, evidence_ids, safe_next_actions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (fid, purchase_id, str(code), severity, summary, json.dumps(list(evidence_ids)), json.dumps(list(safe_next_actions)), now()),
         )
         return fid
 
     def findings_for_purchase(self, purchase_id: str) -> list[Finding]:
-        rows = self.conn.execute("SELECT * FROM findings WHERE purchase_id = ? ORDER BY created_at, rowid", (purchase_id,)).fetchall()
+        rows = self._q("SELECT * FROM findings WHERE purchase_id = ? ORDER BY created_at, rowid", (purchase_id,)).fetchall()
         return [_finding(r) for r in rows]
 
     def has_finding(self, purchase_id: str, code: str) -> bool:
-        r = self.conn.execute("SELECT 1 FROM findings WHERE purchase_id = ? AND code = ? LIMIT 1", (purchase_id, str(code))).fetchone()
+        r = self._q("SELECT 1 FROM findings WHERE purchase_id = ? AND code = ? LIMIT 1", (purchase_id, str(code))).fetchone()
         return r is not None
 
     def has_unresolved_service_finding(self, principal_id: str, service_id: str, code: str) -> bool:
-        r = self.conn.execute(
+        r = self._q(
             "SELECT 1 FROM findings f JOIN purchases p ON p.purchase_id = f.purchase_id "
             "WHERE p.principal_id = ? AND p.service_id = ? AND f.code = ? AND f.resolved_at IS NULL LIMIT 1",
             (principal_id, service_id, str(code)),
@@ -247,14 +278,14 @@ class SqliteRepository:
         return r is not None
 
     def resolve_findings(self, purchase_id: str, code: str) -> int:
-        cur = self.conn.execute(
+        cur = self._q(
             "UPDATE findings SET resolved_at = ? WHERE purchase_id = ? AND code = ? AND resolved_at IS NULL",
             (now(), purchase_id, str(code)),
         )
         return cur.rowcount
 
     def resolve_service_findings(self, principal_id: str, service_id: str, code: str) -> int:
-        cur = self.conn.execute(
+        cur = self._q(
             "UPDATE findings SET resolved_at = ? WHERE resolved_at IS NULL AND code = ? AND purchase_id IN "
             "(SELECT purchase_id FROM purchases WHERE principal_id = ? AND service_id = ?)",
             (now(), str(code), principal_id, service_id),
@@ -263,7 +294,7 @@ class SqliteRepository:
 
     def list_findings(self, principal_id: str, unresolved_only: bool = True) -> list[dict[str, Any]]:
         where = "AND f.resolved_at IS NULL" if unresolved_only else ""
-        rows = self.conn.execute(
+        rows = self._q(
             "SELECT f.*, p.service_id, p.payment_status, p.fulfillment_status, p.authorized_amount_minor, p.purchase_intent_id "
             f"FROM findings f JOIN purchases p ON p.purchase_id = f.purchase_id WHERE p.principal_id = ? {where} "
             "ORDER BY f.created_at, f.rowid",
@@ -279,12 +310,15 @@ class SqliteRepository:
 
     # ---- admin -----------------------------------------------------------
     def reset(self, principal_id: str) -> dict[str, int]:
-        ids = [r[0] for r in self.conn.execute("SELECT purchase_id FROM purchases WHERE principal_id = ?", (principal_id,)).fetchall()]
-        counts = {"purchases": 0, "evidence": 0, "findings": 0}
-        if not ids:
-            return counts
-        marks = ", ".join("?" for _ in ids)
-        counts["evidence"] = self.conn.execute(f"DELETE FROM evidence WHERE purchase_id IN ({marks})", ids).rowcount
-        counts["findings"] = self.conn.execute(f"DELETE FROM findings WHERE purchase_id IN ({marks})", ids).rowcount
-        counts["purchases"] = self.conn.execute(f"DELETE FROM purchases WHERE purchase_id IN ({marks})", ids).rowcount
-        return counts
+        sub = "(SELECT purchase_id FROM purchases WHERE principal_id = ?)"
+        with self._lock:
+            self._q("BEGIN IMMEDIATE")
+            try:
+                ev = self._q(f"DELETE FROM evidence WHERE purchase_id IN {sub}", (principal_id,)).rowcount
+                fi = self._q(f"DELETE FROM findings WHERE purchase_id IN {sub}", (principal_id,)).rowcount
+                pu = self._q("DELETE FROM purchases WHERE principal_id = ?", (principal_id,)).rowcount
+                self._q("COMMIT")
+            except Exception:
+                self._q("ROLLBACK")
+                raise
+        return {"purchases": pu, "evidence": ev, "findings": fi}

@@ -1,3 +1,6 @@
+import dataclasses
+import sqlite3
+import threading
 import time
 
 import pytest
@@ -95,3 +98,66 @@ def test_set_fulfillment(repo):
     repo.set_fulfillment(row.purchase_id, FulfillmentStatus.VERIFIED, history_entry("VERIFIED"), artifact_hash="abc")
     got = repo.get_purchase(row.purchase_id)
     assert got.fulfillment_status == FulfillmentStatus.VERIFIED and got.artifact_hash == "abc"
+
+
+def test_concurrent_cas_exactly_one_winner(repo):
+    for i in range(50):
+        row = repo.create_purchase(mk(intent=f"r{i}"))
+        results, errors = [], []
+        barrier = threading.Barrier(8)
+
+        def go():
+            try:
+                barrier.wait()
+                results.append(repo.update_status(row.purchase_id, PaymentStatus.INTENT_RECORDED, PaymentStatus.QUOTED))
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        ts = [threading.Thread(target=go) for _ in range(8)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        assert not errors
+        assert results.count(True) == 1
+
+
+def test_two_instances_same_file_second_cas_loses(tmp_path):
+    a, b = SqliteRepository(tmp_path / "s.db"), SqliteRepository(tmp_path / "s.db")
+    row = a.create_purchase(mk())
+    assert a.update_status(row.purchase_id, PaymentStatus.INTENT_RECORDED, PaymentStatus.QUOTED)
+    assert not b.update_status(row.purchase_id, PaymentStatus.INTENT_RECORDED, PaymentStatus.QUOTED)
+
+
+def test_non_unique_integrity_error_not_duplicate(repo):
+    with pytest.raises(sqlite3.IntegrityError) as ei:
+        repo.create_purchase(dataclasses.replace(mk(), network=None))
+    assert not isinstance(ei.value, DuplicateKeyError)
+
+
+def test_protected_columns_rejected(repo):
+    row = repo.create_purchase(mk())
+    with pytest.raises(ValueError):
+        repo.update_status(row.purchase_id, PaymentStatus.INTENT_RECORDED, PaymentStatus.QUOTED, service_id="x")
+    with pytest.raises(ValueError):
+        repo.set_fulfillment(row.purchase_id, FulfillmentStatus.VERIFIED, attempt=9)
+    with pytest.raises(ValueError):
+        repo.set_fulfillment(row.purchase_id, FulfillmentStatus.VERIFIED, authorized_amount_minor=1)
+    assert repo.update_status(row.purchase_id, PaymentStatus.INTENT_RECORDED, PaymentStatus.QUOTED)
+    assert repo.update_status(row.purchase_id, PaymentStatus.QUOTED, PaymentStatus.AUTHORIZED, authorized_amount_minor=5)
+
+
+def test_enc_rejects_dict_in_plain_column(repo):
+    row = repo.create_purchase(mk())
+    with pytest.raises(TypeError):
+        repo.update_status(row.purchase_id, PaymentStatus.INTENT_RECORDED, PaymentStatus.QUOTED, reject_reason={"a": 1})
+
+
+def test_reset_leaves_other_principal(repo):
+    mine = repo.create_purchase(mk())
+    other = repo.create_purchase(dataclasses.replace(mk(intent="o"), principal_id="q"))
+    repo.add_evidence(other.purchase_id, "quote", {})
+    repo.add_finding(other.purchase_id, "NOT_X402", "proven", "x", [], [])
+    repo.reset("p")
+    assert repo.get_purchase(mine.purchase_id) is None
+    assert repo.get_purchase(other.purchase_id) is not None
+    assert len(repo.list_evidence(other.purchase_id)) == 1
+    assert len(repo.findings_for_purchase(other.purchase_id)) == 1
