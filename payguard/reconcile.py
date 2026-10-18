@@ -8,6 +8,11 @@ Order per call: poll the chain (≤5 × 2 s) →
   not consumed and still valid: ONE resend of the identical stored header, classified by the step-6 rules
   without re-entering reconcile → if still unknown, ONE more poll → stop.
 The signature of reconcile() is frozen (purchase.reconcile_and_finish calls it).
+
+Single-flight (#74): at most one reconcile runs per purchase_id in this process. A concurrent caller (a second
+tool call, or startup recovery racing a live call) does not poll or resend; it waits for the running one, bounded by
+its own deadline and without cancelling it, then returns the row as stored. If the leader ended still unknown
+WITHOUT a resend (it ran out of budget) and the joiner has room for one, the joiner then leads a reconcile itself.
 """
 from __future__ import annotations
 
@@ -151,7 +156,58 @@ def _decide_consumed(repo: Any, row: Purchase, state: ChainState) -> Purchase:
     return _consumed_unproven(repo, row, state)
 
 
+# purchase_id -> (future resolved (always with None) when that purchase's running reconcile ends, RESEND evidence count
+# when that leader started). Entries are removed in a finally on success, error and cancellation alike, so nothing
+# outlives the call or its event loop. The baseline is the leader's, so a joiner arriving after the leader's resend
+# still sees that resend.
+_RUNNING: dict[str, tuple[asyncio.Future[None], int]] = {}
+
+
 async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
+    """Single-flight entry point: lead a reconcile for row.purchase_id, or join the one already running."""
+    pid = row.purchase_id
+    loop = asyncio.get_running_loop()
+    while (entry := _RUNNING.get(pid)) is not None:
+        running, resends = entry
+        if running.get_loop() is not loop:  # left by a loop that closed mid-reconcile: it can never resolve here
+            del _RUNNING[pid]
+            break
+        row = await _join(deps, row, running, deadline)
+        # Lead ourselves only if the leader ended without a resend (e.g. it was out of budget) and we have room
+        # for one; after the leader's resend a second one is never made by a joiner.
+        if (not running.done() or row.payment_status != P.SETTLEMENT_UNKNOWN
+                or _resend_count(deps.repo, pid) != resends or time.monotonic() + RESEND_TIMEOUT_S >= deadline):
+            return row
+    done: asyncio.Future[None] = loop.create_future()
+    _RUNNING[pid] = (done, _resend_count(deps.repo, pid))
+    try:
+        return await _reconcile(deps, row, deadline)
+    finally:
+        if (cur := _RUNNING.get(pid)) is not None and cur[0] is done:
+            del _RUNNING[pid]
+        if not done.done():
+            done.set_result(None)  # never an exception: joiners only need "it ended"
+
+
+def _resend_count(repo: Any, purchase_id: str) -> int:
+    return sum(1 for e in repo.list_evidence(purchase_id) if e.kind == EvidenceKind.RESEND)
+
+
+async def _join(deps: Any, row: Purchase, running: asyncio.Future[None], deadline: float) -> Purchase:
+    """Wait (up to our own deadline) for the running reconcile of this purchase, then return the stored row."""
+    remaining = deadline - time.monotonic()
+    finished = running.done()
+    if not finished and remaining > 0:
+        try:  # shield: our timeout must never cancel the leader
+            await asyncio.wait_for(asyncio.shield(running), timeout=remaining)
+            finished = True
+        except TimeoutError:
+            log.info("reconcile %s: joined call ran out of budget; leader still running", row.purchase_id)
+    deps.repo.append_history(row.purchase_id, history_entry("reconcile_joined", leader_finished=finished))
+    return deps.repo.get_purchase(row.purchase_id) or row
+
+
+async def _reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
     repo = deps.repo
     row = repo.get_purchase(row.purchase_id) or row
     if row.payment_status != P.SETTLEMENT_UNKNOWN:
