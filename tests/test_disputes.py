@@ -142,6 +142,38 @@ def test_registry_fills_contact_email_from_env(monkeypatch):
     assert all(s.contact_email is None for s in load_registry(base_url="http://seller.test").values())
 
 
+def test_bazaar_seller_never_gets_the_demo_contact_fallback(monkeypatch):
+    from payguard.registry import load_registry
+
+    monkeypatch.setenv("SELLER_CONTACT_EMAIL", "ops@seller.test")
+    monkeypatch.setenv("INTEL_BASE_URL", "http://meridian.test")
+    monkeypatch.setenv("BAZAAR_URL", "https://public.seller.example/data")
+    monkeypatch.setenv("BAZAAR_PRICE_MINOR", "10000")
+    reg = load_registry(base_url="http://seller.test")
+    assert reg["bazaar"].contact_email is None  # a public seller must publish its own well-known contact
+    assert reg["intel"].contact_email == "ops@seller.test" and reg["report"].contact_email == "ops@seller.test"
+
+
+async def test_file_dispute_for_bazaar_without_well_known_is_refused_not_misaddressed(deps, seller, contact_env, monkeypatch):
+    from payguard.models import PaymentStatus, Purchase
+    from payguard.registry import load_registry
+
+    monkeypatch.setenv("BAZAAR_URL", "http://seller.test/data")  # the fake seller: no well-known file
+    monkeypatch.setenv("BAZAAR_PRICE_MINOR", "100000")
+    deps.registry = {**deps.registry, "bazaar": load_registry(base_url="http://seller.test")["bazaar"]}
+    row = deps.repo.create_purchase(Purchase.new(principal_id="test", task_id=None, purchase_intent_id="i-bazaar",
+                                                 request_fingerprint="f" * 64, service_id="bazaar", args={}, network="eip155:8453"))
+    cur = PaymentStatus.INTENT_RECORDED
+    for nxt in (PaymentStatus.QUOTED, PaymentStatus.AUTHORIZED, PaymentStatus.PAYLOAD_SIGNED, PaymentStatus.SENT, PaymentStatus.SETTLED):
+        assert deps.repo.update_status(row.purchase_id, cur, nxt)
+        cur = nxt
+    pid = row.purchase_id
+    deps.repo.add_finding(pid, "PRICE_MISMATCH", "proven", "overcharged", [], ["human_review", "report_to_seller"])
+    out = await file_dispute(deps, pid, backend=DryRunBackend(deps.artifact_dir))
+    assert "no contact address" in out["error"]  # never the demo inbox
+    assert not [e for e in deps.repo.list_evidence(pid) if e.kind == EvidenceKind.DISPUTE]  # still disputable later
+
+
 # ---- file_dispute ---------------------------------------------------------------------------------------------
 
 async def test_file_dispute_refuses_a_verified_purchase(deps, seller, contact_env):

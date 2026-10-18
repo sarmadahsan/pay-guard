@@ -84,5 +84,8 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
             ))
     contact = (os.environ.get("SELLER_CONTACT_EMAIL") or "").strip() or None
     if contact:
-        services = [replace(s, contact_email=contact) for s in services]
+        # Only sellers the operator runs (the :8402 demo sellers and Meridian). A public Bazaar seller must publish its
+        # own /.well-known/x402-seller.json: the demo inbox is not its support address, and a dispute sent there would
+        # be the one dispute the purchase is allowed.
+        services = [replace(s, contact_email=contact) if s.id != "bazaar" else s for s in services]
     return {s.id: s for s in services}
