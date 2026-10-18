@@ -203,3 +203,80 @@ async def test_flow_same_intent_and_new_intent_both_blocked_without_payment(make
     assert len(signatures(seller)) == 1  # never a second signed authorization
     assert set(new["safe_next_actions"]) >= {"human_review", "report_to_seller"}
     assert not any("pay" in a or "retry" in a for a in new["safe_next_actions"])
+
+
+# ---- #75: old signed/unknown rows keep blocking past the 15-minute window ----
+
+def _assert_blocked_new_intent(deps, old):
+    before = len(deps.repo.list_purchases("test"))
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
+    assert d.action == "return" and not d.reconcile_first and d.row.purchase_id == old.purchase_id
+    assert d.row.payment_status == old.payment_status
+    assert [f.code for f in deps.repo.findings_for_purchase(old.purchase_id)] == ["DUPLICATE_SUSPECTED"]
+    ev = [e for e in deps.repo.list_evidence(old.purchase_id) if e.kind == "retry_blocked"]
+    assert ev and ev[-1].payload["variant"] == "new_intent" and ev[-1].payload["purchase_intent_id"] == "new"
+    assert len(deps.repo.list_purchases("test")) == before  # no new row
+
+
+@pytest.mark.parametrize("status", [P.SENT, P.PAYLOAD_SIGNED])
+@pytest.mark.parametrize("age_s", [20 * 60, 2 * 3600])
+def test_old_signed_in_flight_row_under_other_intent_still_blocks(deps, status, age_s):
+    old = seed(deps.repo, status, intent="old", age_s=age_s)
+    _assert_blocked_new_intent(deps, old)
+
+
+def test_old_signed_in_flight_blocks_even_when_valid_before_passed_on_local_clock(deps):
+    # Chain time decides expiry, not the local clock: the guard never reads valid_before.
+    old = seed(deps.repo, P.SENT, intent="old", age_s=2 * 3600)
+    deps.repo.conn.execute("UPDATE purchases SET valid_before = ? WHERE purchase_id = ?",
+                           (int(time.time()) - 3600, old.purchase_id))
+    assert deps.repo.get_purchase(old.purchase_id).valid_before < time.time()
+    _assert_blocked_new_intent(deps, old)
+
+
+@pytest.mark.parametrize("age_s", [20 * 60, 2 * 3600])
+def test_old_unknown_row_reconciles_first_then_proceeds_once_failed(deps, age_s):
+    old = seed(deps.repo, P.SETTLEMENT_UNKNOWN, intent="old", age_s=age_s)
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
+    assert d.action == "return" and d.reconcile_first and d.row.purchase_id == old.purchase_id
+    assert deps.repo.findings_for_purchase(old.purchase_id) == []
+    # reconcile (chain time) proves the authorization expired unused: CAS to PAYMENT_FAILED
+    assert deps.repo.update_status(old.purchase_id, P.SETTLEMENT_UNKNOWN, P.PAYMENT_FAILED)
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new", after_reconcile=True)
+    assert d.action == "proceed" and d.attempt == 1 and d.supersedes is None
+
+
+def test_old_unknown_row_still_unknown_after_reconcile_is_duplicate(deps):
+    old = seed(deps.repo, P.SETTLEMENT_UNKNOWN, intent="old", age_s=2 * 3600)
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new", after_reconcile=True)
+    assert d.action == "return" and not d.reconcile_first and d.row.purchase_id == old.purchase_id
+    assert deps.repo.has_finding(old.purchase_id, FindingCode.DUPLICATE_SUSPECTED)
+
+
+@pytest.mark.parametrize("status", [P.INTENT_RECORDED, P.QUOTED, P.AUTHORIZED])
+def test_old_unsigned_in_flight_row_does_not_block(deps, status):
+    old = seed(deps.repo, status, intent="old", age_s=20 * 60)
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
+    assert d.action == "proceed"
+    assert deps.repo.findings_for_purchase(old.purchase_id) == []
+
+
+@pytest.mark.parametrize("fulfillment", [FulfillmentStatus.PENDING, FulfillmentStatus.FAILED, FulfillmentStatus.NO_DELIVERY])
+def test_old_settled_unverified_row_does_not_block(deps, fulfillment):
+    old = seed(deps.repo, P.SETTLED, fulfillment, intent="old", age_s=2 * 3600)
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
+    assert d.action == "proceed"
+    assert deps.repo.findings_for_purchase(old.purchase_id) == []
+
+
+@pytest.mark.parametrize("status", [P.QUOTED, P.AUTHORIZED, P.PAYLOAD_SIGNED, P.SENT])
+def test_in_window_in_flight_row_under_other_intent_blocks(deps, status):
+    old = seed(deps.repo, status, intent="old", age_s=14 * 60)
+    _assert_blocked_new_intent(deps, old)
+
+
+def test_old_unsigned_row_skipped_but_older_signed_row_blocks(deps):
+    # Newest-first iteration: an old unsigned row does not stop the scan from reaching an older signed one.
+    signed = seed(deps.repo, P.SENT, intent="older", age_s=3 * 3600)
+    seed(deps.repo, P.QUOTED, intent="old", age_s=20 * 60)
+    _assert_blocked_new_intent(deps, signed)

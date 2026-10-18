@@ -12,6 +12,7 @@ from typing import Any
 
 from payguard.models import (
     IN_FLIGHT,
+    SIGNED_IN_FLIGHT,
     EvidenceKind,
     FindingCode,
     FulfillmentStatus,
@@ -44,6 +45,18 @@ def _trips_guard(row: Purchase) -> bool:
     if row.payment_status in IN_FLIGHT or row.payment_status == P.SETTLEMENT_UNKNOWN:
         return True
     return row.payment_status == P.SETTLED and row.fulfillment_status != FulfillmentStatus.VERIFIED
+
+
+def _trips_guard_past_window(row: Purchase) -> bool:
+    """Rows older than DUPLICATE_WINDOW_S that still block (#75): a signed authorization that may still settle.
+
+    Age alone never clears a signed row, and valid_before is NOT compared with the local clock (chain time decides
+    expiry; this runs under the lock with no network). A SETTLEMENT_UNKNOWN row goes through reconcile_first, which
+    uses chain time and moves an expired authorization to PAYMENT_FAILED, after which it no longer trips. A signed
+    in-flight row from a dead process blocks (conservatively) until startup recovery turns it into SETTLEMENT_UNKNOWN.
+    Unsigned in-flight rows (nothing signed, no money can move) and settled-not-verified rows keep F7's 15-min window.
+    """
+    return row.payment_status in SIGNED_IN_FLIGHT or row.payment_status == P.SETTLEMENT_UNKNOWN
 
 
 def _mark_duplicate(deps: Any, row: Purchase, variant: str, purchase_intent_id: str) -> None:
@@ -117,14 +130,17 @@ def resolve_intent(deps: Any, service: Service, args: dict[str, Any], request_fi
         else:
             return IntentDecision("return", row=latest)  # SETTLED+VERIFIED or REJECTED: unchanged
 
-    # ---- duplicate guard on (principal, fingerprint) within 15 minutes, any intent id ----
+    # ---- duplicate guard on (principal, fingerprint), any intent id ----
+    # Within 15 minutes: in-flight, unknown, or settled-not-verified rows trip. Older: only signed/unknown rows (#75).
     # Runs BEFORE the quarantine so a same-topic retry under a new intent id returns the EXISTING record with
     # DUPLICATE_SUSPECTED (PRD metric 4, user story); only a reworded request reaches the quarantine.
     # Also runs for attempt+1 retries: another intent id may have an in-flight/unverified row for the same request.
-    for cand in repo.find_recent_by_fingerprint(principal, request_fingerprint, now() - DUPLICATE_WINDOW_S):
+    window_start = now() - DUPLICATE_WINDOW_S
+    for cand in repo.find_recent_by_fingerprint(principal, request_fingerprint, 0):  # newest first, all ages
         if cand.purchase_intent_id == purchase_intent_id:
             continue
-        if not _trips_guard(cand):
+        trips = _trips_guard(cand) if cand.created_at >= window_start else _trips_guard_past_window(cand)
+        if not trips:
             continue  # a verified purchase under a fresh intent pays again by design (Sugg. 9)
         if cand.payment_status == P.SETTLEMENT_UNKNOWN and not after_reconcile:
             return IntentDecision("return", row=cand, reconcile_first=True)
