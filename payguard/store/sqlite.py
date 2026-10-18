@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -131,13 +132,33 @@ class SqliteRepository:
     def __init__(self, path: str | Path) -> None:
         self.path = str(path)
         # isolation_level=None -> autocommit; every UPDATE is its own atomic transaction.
-        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+        # timeout=5 and busy_timeout BEFORE the WAL pragma: Claude Desktop spawns the server twice at once
+        # (chat app + Code bridge), and the second process must wait for the first one's schema/recovery
+        # write instead of dying with "database is locked" (review S7).
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
+        self._set_wal()
         self.conn.executescript(SCHEMA)
         # One shared connection: serialize execute + fetch/rowcount so threads cannot interleave.
         self._lock = threading.RLock()
+
+    def _set_wal(self) -> None:
+        """Switch to WAL, tolerating a concurrent opener: the journal-mode change needs a brief exclusive
+        lock, so retry past the busy timeout, and accept 'wal' already set by the other process."""
+        last: Exception | None = None
+        for _ in range(3):
+            try:
+                mode = self.conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                if str(mode).lower() == "wal":
+                    return
+                raise sqlite3.OperationalError(f"journal_mode is {mode!r}, expected wal")
+            except sqlite3.OperationalError as e:  # "database is locked" while the other process writes
+                last = e
+                time.sleep(0.2)
+        current = self.conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(current).lower() != "wal":
+            raise last or sqlite3.OperationalError("could not enable WAL")
 
     def _q(self, sql: str, params: Any = ()) -> _Res:
         with self._lock:
