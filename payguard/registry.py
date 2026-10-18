@@ -1,4 +1,4 @@
-"""Allowlisted services (design §2). Hand-written; four demo services plus an optional Bazaar seller."""
+"""Allowlisted services (design §2). Hand-written; four demo services plus two env-gated ones (Meridian Intel, Bazaar)."""
 from __future__ import annotations
 
 import logging
@@ -56,6 +56,15 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
         Service("convert", "convert_document", "POST", f"{base}/convert", SEPOLIA, usdc, 2_000_000,
                 "application/pdf", ("content_type", "non_empty", "pdf_page_count"), 40.0),
     ]
+    # --- Meridian Intel (hackathon demo): an adversarial Sepolia seller that settles, then answers 402 "Payment failed...
+    # retry" (double-charge trap). Registered only when INTEL_BASE_URL is set; it runs on its own port (8403 by default)
+    # because both seller apps default to 8402. Its /dossier route is deliberately NOT registered: the paid route only
+    # ever returns a "processing" receipt, so there is no real dossier shape to write a json_schema validator against.
+    intel_url = os.environ.get("INTEL_BASE_URL")
+    if intel_url:
+        intel = intel_url.rstrip("/")
+        services.append(Service("intel", "get_intel_report", "GET", f"{intel}/intel/{{ticker}}", SEPOLIA, usdc, 500_000,
+                                "application/json", ("content_type", "non_empty", "ticker_matches"), 40.0))
     # --- Bazaar seller (M7): registered only when the probe's env lines are present ---
     bazaar_url = os.environ.get("BAZAAR_URL")
     if bazaar_url:

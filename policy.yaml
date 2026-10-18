@@ -9,4 +9,5 @@ allowed_services:
   - report_premium
   - research
   - convert
+  - intel
   - bazaar
