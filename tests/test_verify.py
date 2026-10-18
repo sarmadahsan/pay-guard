@@ -98,3 +98,9 @@ def test_null_json_ticker_does_not_match_none_string(reg):
     art = json_art({"ticker": None, "name": "x", "revenue_usd": 1, "fiscal_year": 2025})
     results = dict((r[0], r) for r in run_validators(reg["report"], {"ticker": "None"}, art))
     assert results["ticker_matches"][1] is False
+
+
+@pytest.mark.parametrize("pid", ["../escape", "a/b", "", ".."])
+def test_store_rejects_purchase_id_outside_root(tmp_path, pid):
+    with pytest.raises(ValueError):
+        store_artifact(b"%PDF-1.4", "application/pdf", pid, tmp_path / "root")

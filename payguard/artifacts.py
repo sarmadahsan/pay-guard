@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,8 @@ def store_artifact(body: bytes, content_type: str, purchase_id: str, root: Path)
             return Artifact("json", ct, sha, len(body), json=json.loads(body))
         except (ValueError, RecursionError):
             pass
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", purchase_id or ""):
+        raise ValueError(f"invalid purchase_id {purchase_id!r}")  # keeps the file inside root
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     ext = "pdf" if ct == "application/pdf" else "bin"
