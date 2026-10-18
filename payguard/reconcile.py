@@ -18,7 +18,14 @@ from typing import Any
 
 from payguard import chain
 from payguard.chain import ChainState
-from payguard.models import EvidenceKind, FindingCode, NextAction, PaymentStatus, Purchase, history_entry
+from payguard.models import (
+    EvidenceKind,
+    FindingCode,
+    NextAction,
+    PaymentStatus,
+    Purchase,
+    history_entry,
+)
 from payguard.outcome import classify_outcome, send_paid_request
 
 log = logging.getLogger(__name__)
@@ -27,6 +34,7 @@ POLL_ATTEMPTS = 5
 POLL_INTERVAL_S = 2.0
 EXPIRY_MARGIN_S = 30
 RESEND_TIMEOUT_S = 8.0  # review S4: keeps the worst case under the 45 s call budget
+MIN_READ_S = 0.5  # a chain read is skipped when less than this remains of the call budget
 
 
 def _payment_payload(repo: Any, purchase_id: str) -> dict[str, Any] | None:
@@ -43,23 +51,27 @@ async def _poll(deps: Any, reader: Any, row: Purchase, pp: dict[str, Any], deadl
     last: ChainState | None = None
     polls = 0
     for i in range(attempts):
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining < MIN_READ_S:
             break
+        token = chain.CALL_DEADLINE.set(deadline)  # the real reader's worker thread stops its log search here
         try:  # review S4: an RPC read never runs past the call budget
             last = await asyncio.wait_for(
                 reader(row.network, pp["from"], pp["nonce"], pp["to"], int(pp["value"]), row.created_at),
-                timeout=max(1.0, deadline - time.monotonic()))
-        except asyncio.TimeoutError:
+                timeout=remaining)
+        except TimeoutError:
             log.warning("chain read timed out for %s", row.purchase_id)
             break
         except Exception as e:  # noqa: BLE001  # an RPC failure is "no information", never a decision
             log.warning("chain read failed for %s: %s: %s", row.purchase_id, type(e).__name__, e)
             break
+        finally:
+            chain.CALL_DEADLINE.reset(token)
         polls += 1
         if last.used:
             break
         if i < attempts - 1:
-            await deps.sleep(POLL_INTERVAL_S)
+            await deps.sleep(max(0.0, min(POLL_INTERVAL_S, deadline - time.monotonic())))
     if last is not None:
         deps.repo.add_evidence(row.purchase_id, EvidenceKind.CHAIN_CHECK, {
             "used": last.used, "event": last.event, "tx_hash": last.tx_hash, "transfer_ok": last.transfer_ok,
@@ -71,14 +83,14 @@ async def _poll(deps: Any, reader: Any, row: Purchase, pp: dict[str, Any], deadl
 
 
 def _settle_from_chain(repo: Any, row: Purchase, state: ChainState) -> Purchase:
-    repo.add_evidence(row.purchase_id, EvidenceKind.SETTLEMENT, {
-        "source": "chain:AuthorizationUsed+Transfer", "transaction": state.tx_hash, "block_number": state.block_number,
-        "block_timestamp": state.block_timestamp, "network": row.network})
     if not repo.update_status(row.purchase_id, P.SETTLEMENT_UNKNOWN, P.SETTLED,
                               history_entry("SETTLED", via="chain_check", tx=state.tx_hash, block=state.block_number),
                               settlement_tx=state.tx_hash):
         log.warning("compare-and-set lost for %s (SETTLED via chain); leaving row as is", row.purchase_id)
         return repo.get_purchase(row.purchase_id)
+    repo.add_evidence(row.purchase_id, EvidenceKind.SETTLEMENT, {
+        "source": "chain:AuthorizationUsed+Transfer", "transaction": state.tx_hash, "block_number": state.block_number,
+        "block_timestamp": state.block_timestamp, "network": row.network})
     repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
     return repo.get_purchase(row.purchase_id)
 
@@ -97,6 +109,9 @@ def _fail(repo: Any, row: Purchase, state: ChainState, valid_before: int, why: s
 
 def _consumed_unproven(repo: Any, row: Purchase, state: ChainState) -> Purchase:
     """Nonce consumed but no AuthorizationUsed+Transfer proof: never resend, never retry, ask a human."""
+    current = repo.get_purchase(row.purchase_id)
+    if current is None or current.payment_status != P.SETTLEMENT_UNKNOWN:
+        return current or row  # another call already decided this row
     chain_ev = _last_chain_evidence(repo, row.purchase_id)
     repo.append_history(row.purchase_id, history_entry("nonce_consumed_unproven", event=state.event, tx=state.tx_hash))
     repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)  # replaced by the sharper finding below
@@ -152,8 +167,14 @@ async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
         outcome = await send_paid_request(http, method, url, body, pp["header"], timeout_s)
     repo.add_evidence(row.purchase_id, EvidenceKind.RESEND, {"status": outcome.status, "error": outcome.error,
                                                             "payment_required_error": outcome.payment_required_error()})
-    row = classify_outcome(repo, repo.get_purchase(row.purchase_id), outcome, P.SETTLEMENT_UNKNOWN,
-                           deps.artifact_dir, via="resend")
+    try:
+        row = classify_outcome(repo, repo.get_purchase(row.purchase_id), outcome, P.SETTLEMENT_UNKNOWN,
+                               deps.artifact_dir, via="resend")
+    except Exception as e:  # a classifier bug leaves the row SETTLEMENT_UNKNOWN, never decides money
+        log.exception("resend classification failed for %s", row.purchase_id)
+        repo.add_evidence(row.purchase_id, EvidenceKind.SELLER_ERROR,
+                          {"stage": "classify", "via": "resend", "error": f"{type(e).__name__}: {e}"})
+        row = repo.get_purchase(row.purchase_id)
     if row.payment_status == P.SETTLED:
         repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
         return row
@@ -164,5 +185,8 @@ async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
         return _decide_consumed(repo, row, state)
     if state is not None and state.block_timestamp > valid_before + EXPIRY_MARGIN_S:
         return _fail(repo, row, state, valid_before, "authorization expired by block time after the resend")
-    repo.append_history(row.purchase_id, history_entry("still_unknown", valid_before=valid_before))
-    return repo.get_purchase(row.purchase_id)
+    current = repo.get_purchase(row.purchase_id)
+    if current is not None and current.payment_status == P.SETTLEMENT_UNKNOWN:
+        repo.append_history(row.purchase_id, history_entry("still_unknown", valid_before=valid_before))
+        current = repo.get_purchase(row.purchase_id)
+    return current or row

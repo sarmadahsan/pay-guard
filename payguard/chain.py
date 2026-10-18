@@ -9,6 +9,7 @@ logs are searched in 100-block windows starting from an estimate of the block th
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import math
 import os
 import time
@@ -27,6 +28,11 @@ BLOCK_TIME_S = 2.0  # Base
 LOG_WINDOW = 100  # blocks per eth_getLogs call (public RPC limit is 200)
 MAX_WINDOWS = 60  # 6000 blocks ≈ 3.3 h: more than any validBefore window
 START_MARGIN_BLOCKS = 60
+READ_BUDGET_S = 30.0  # default bound on one authorization_state call when no call deadline is set
+
+# Monotonic deadline of the current tool call. reconcile sets it around each read so the worker thread stops
+# its log search when the call budget is spent, even though asyncio cannot cancel the thread itself.
+CALL_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar("payguard_chain_call_deadline", default=None)
 
 TOPIC_USED = "0x" + Web3.keccak(text="AuthorizationUsed(address,bytes32)").hex()
 TOPIC_CANCELED = "0x" + Web3.keccak(text="AuthorizationCanceled(address,bytes32)").hex()
@@ -68,12 +74,15 @@ def _is_transfer(lg: Any, usdc: str, from_addr: str, pay_to: str, value_minor: i
             and int.from_bytes(bytes(lg["data"]), "big") == int(value_minor))
 
 
-def _find_event(w3: Web3, usdc: str, from_addr: str, nonce_hex: str, pay_to: str, value_minor: int,
-                from_block: int, to_block: int) -> tuple[str | None, str | None, bool | None]:
-    """Search AuthorizationUsed / AuthorizationCanceled for (from, nonce) in small windows; verify the Transfer."""
+def _find_event(w3: Any, usdc: str, from_addr: str, nonce_hex: str, pay_to: str, value_minor: int,
+                from_block: int, to_block: int, stop_at: float | None = None) -> tuple[str | None, str | None, bool | None]:
+    """Search AuthorizationUsed / AuthorizationCanceled for (from, nonce) in small windows; verify the Transfer.
+    stop_at is a time.monotonic() value: the search gives up (as "not found") once it passes."""
     start = max(0, from_block)
     for _ in range(MAX_WINDOWS):
         if start > to_block:
+            break
+        if stop_at is not None and time.monotonic() >= stop_at:
             break
         end = min(start + LOG_WINDOW - 1, to_block)
         logs = w3.eth.get_logs({"address": usdc, "fromBlock": start, "toBlock": end,
@@ -90,7 +99,8 @@ def _find_event(w3: Web3, usdc: str, from_addr: str, nonce_hex: str, pay_to: str
     return None, None, None
 
 
-def _read(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int, since_ts: float) -> ChainState:
+def _read(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int, since_ts: float,
+          stop_at: float | None = None) -> ChainState:
     w3 = _w3(network)
     usdc = Web3.to_checksum_address(USDC[network])
     block = w3.eth.get_block("latest")
@@ -102,11 +112,18 @@ def _read(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: in
     if not used:
         return ChainState(False, bn, ts)
     from_block = bn - math.ceil(max(0.0, time.time() - since_ts) / BLOCK_TIME_S) - START_MARGIN_BLOCKS
-    event, tx_hash, ok = _find_event(w3, usdc, from_addr, nonce_hex, pay_to, int(value_minor), from_block, bn)
+    event, tx_hash, ok = _find_event(w3, usdc, from_addr, nonce_hex, pay_to, int(value_minor), from_block, bn, stop_at)
     return ChainState(True, bn, ts, event, tx_hash, ok)
 
 
 async def authorization_state(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int,
-                              since_ts: float) -> ChainState:
-    """Non-blocking wrapper: web3's HTTP provider is synchronous."""
-    return await asyncio.to_thread(_read, network, from_addr, nonce, pay_to, value_minor, since_ts)
+                              since_ts: float, *, stop_at: float | None = None) -> ChainState:
+    """Non-blocking wrapper: web3's HTTP provider is synchronous.
+
+    The worker thread cannot be cancelled, so it gets an absolute monotonic stop time: the explicit stop_at, else
+    the call deadline in CALL_DEADLINE, else now + READ_BUDGET_S (whichever is earliest)."""
+    limit = time.monotonic() + READ_BUDGET_S
+    for t in (stop_at, CALL_DEADLINE.get()):
+        if t is not None:
+            limit = min(limit, t)
+    return await asyncio.to_thread(_read, network, from_addr, nonce, pay_to, value_minor, since_ts, limit)
