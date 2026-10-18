@@ -43,6 +43,10 @@ def safe_next_actions(row: Purchase, findings: list[Finding]) -> list[str]:
     return acts
 
 
+def _usdc(n: int) -> str:
+    return f"{n // 1_000_000}.{n % 1_000_000:06d}"
+
+
 def explorer_url(row: Purchase) -> str | None:
     base = EXPLORER.get(row.network)
     if not base:
@@ -72,7 +76,7 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
         "reject_reason": row.reject_reason,
         "history": row.history,
         "settled_amount": row.authorized_amount_minor if settled else None,
-        "settled_amount_usdc": f"{row.authorized_amount_minor / 1_000_000:.6f}" if settled and row.authorized_amount_minor is not None else None,
+        "settled_amount_usdc": _usdc(row.authorized_amount_minor) if settled and row.authorized_amount_minor is not None else None,
         "currency": "USDC",
         "network": row.network,
         "settlement_tx": row.settlement_tx,
