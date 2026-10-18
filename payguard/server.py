@@ -11,10 +11,11 @@ import os  # noqa: E402
 import time  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Any  # noqa: E402
+from typing import Annotated, Any, Literal  # noqa: E402
 
 from dotenv import load_dotenv  # noqa: E402
 from fastmcp import FastMCP  # noqa: E402
+from pydantic import Field  # noqa: E402
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # env-gated tool registration (M7) needs this at import time
 
@@ -32,6 +33,7 @@ INSTRUCTIONS = (
     "the same purchase. Read `findings` and `safe_next_actions` in every result before spending again. "
     "PayGuard never pays twice for the same purchase and has no tool that can make a second payment; a human must approve that."
 )
+NonBlank = Annotated[str, Field(min_length=1, pattern=r"\S")]  # rejects empty and whitespace-only values
 REUSE = ("Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` "
          "in the result before spending again.")
 
@@ -60,18 +62,18 @@ mcp = FastMCP("payguard", instructions=INSTRUCTIONS, lifespan=lifespan)
 # ---- paid tools (design §6): (<service args>, purchase_intent_id, task_id). No force/retry parameter exists. ----
 
 @mcp.tool(description=f"Buy a company report for a ticker: $0.50 USDC on Base Sepolia (tier='premium' asks the $0.75 route). {REUSE}")
-async def get_company_report(ticker: str, purchase_intent_id: str, task_id: str | None = None, tier: str = "standard") -> dict[str, Any]:
+async def get_company_report(ticker: NonBlank, purchase_intent_id: NonBlank, task_id: str | None = None, tier: Literal["standard", "premium"] = "standard") -> dict[str, Any]:
     service_id = "report_premium" if tier == "premium" else "report"
     return await purchase(get_deps(), service_id, {"ticker": ticker.strip().upper()}, purchase_intent_id, task_id)
 
 
 @mcp.tool(description=f"Buy a research report on a topic: $0.75 USDC on Base Sepolia. {REUSE}")
-async def get_research_report(topic: str, purchase_intent_id: str, task_id: str | None = None) -> dict[str, Any]:
+async def get_research_report(topic: NonBlank, purchase_intent_id: NonBlank, task_id: str | None = None) -> dict[str, Any]:
     return await purchase(get_deps(), "research", {"topic": topic.strip()}, purchase_intent_id, task_id)
 
 
 @mcp.tool(description=f"Convert a document to a PDF with the given page count: $2.00 USDC on Base Sepolia. {REUSE}")
-async def convert_document(doc_id: str, pages: int, purchase_intent_id: str, task_id: str | None = None) -> dict[str, Any]:
+async def convert_document(doc_id: NonBlank, pages: Annotated[int, Field(ge=1)], purchase_intent_id: NonBlank, task_id: str | None = None) -> dict[str, Any]:
     return await purchase(get_deps(), "convert", {"doc_id": doc_id.strip(), "pages": int(pages)}, purchase_intent_id, task_id)
 
 
