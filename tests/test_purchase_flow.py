@@ -15,6 +15,11 @@ def codes(resp):
     return [f["code"] for f in resp["findings"]]
 
 
+async def chain_unreachable(*_a, **_k):
+    """Chain reader that always fails: reconcile learns nothing and never resends (keeps a test off the resend path)."""
+    raise RuntimeError("rpc unreachable")
+
+
 async def test_happy_path_report_settled_verified(deps, seller):
     r = await purchase(deps, "report", {"ticker": "ACME"}, "intent-1", "task-1")
     assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "VERIFIED"
@@ -182,6 +187,7 @@ async def test_classification_error_never_leaves_row_sent(deps, seller, monkeypa
         raise RuntimeError("classifier bug")
 
     monkeypatch.setattr(pp, "classify_outcome", boom)
+    deps.chain_reader = chain_unreachable  # this test is about the classify path; reconcile's resend would settle the row
     r = await purchase(deps, "report", {"ticker": "A"}, "i")
     assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and "seller_error" in kinds(deps, r["purchase_id"])
 
@@ -247,6 +253,9 @@ async def test_stalled_quote_hits_absolute_deadline(make_deps, seller, monkeypat
 
 async def test_stalled_paid_request_hits_absolute_deadline(make_deps, seller, monkeypatch):
     deps, stalled = _stalling_deps(make_deps, monkeypatch, seller, "paid")
+    deps.chain_reader = chain_unreachable  # a stalled resend would add reconcile's real 8 s resend timeout to the suite
     r = await purchase(deps, "report", {"ticker": "A"}, "i")
     assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and "seller_error" in kinds(deps, r["purchase_id"])
-    assert len(stalled) == 1 and deps.repo.spent_minor("test") == 500_000
+    # One authorization only: any resend reuses the identical header, and the deadline bounds the paid requests.
+    assert len({q.headers["PAYMENT-SIGNATURE"] for q in stalled}) == 1 and len(stalled) <= 2
+    assert deps.repo.spent_minor("test") == 500_000
