@@ -1,7 +1,14 @@
 """PayGuard MCP server over stdio (design §6). stdout is JSON-RPC; all logs go to stderr."""
 from __future__ import annotations
 
-from payguard.logging_setup import configure_logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# .env first so PAYGUARD_LOG_LEVEL applies; env-gated tool registration (M7) also needs it at import time
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+from payguard.logging_setup import configure_logging  # noqa: E402
 
 configure_logging()  # before anything else can print
 
@@ -10,14 +17,10 @@ import logging  # noqa: E402
 import os  # noqa: E402
 import time  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
-from pathlib import Path  # noqa: E402
 from typing import Annotated, Any, Literal  # noqa: E402
 
-from dotenv import load_dotenv  # noqa: E402
 from fastmcp import FastMCP  # noqa: E402
 from pydantic import Field  # noqa: E402
-
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")  # env-gated tool registration (M7) needs this at import time
 
 from payguard import recovery  # noqa: E402
 from payguard.deps import get_deps  # noqa: E402
