@@ -1,8 +1,11 @@
 import dataclasses
 import time
+from types import SimpleNamespace
 
 from payguard import reconcile as reconcile_mod
-from payguard.models import PaymentStatus
+from payguard import recovery as recovery_mod
+from payguard.models import EvidenceKind, FindingCode, PaymentStatus
+from payguard.purchase import _ensure_unknown_finding
 from payguard.recovery import RECHECK_MARGIN_S, STALE_S, run_startup_recovery
 from tests.test_guard import seed
 
@@ -179,8 +182,6 @@ async def test_live_row_started_during_wait_is_left_alone(deps, monkeypatch):
 async def test_finding_failure_after_cas_still_reconciles(deps, monkeypatch):
     # CodeRabbit PR #71: once the row is SETTLEMENT_UNKNOWN, list_stuck no longer returns it, so a failure while
     # adding the finding must not drop it from phase 2 (reconcile_and_finish adds the finding itself).
-    from payguard import recovery as recovery_mod
-
     calls = []
 
     async def fake_reconcile(d, row, deadline):
@@ -197,3 +198,184 @@ async def test_finding_failure_after_cas_still_reconciles(deps, monkeypatch):
     assert deps.repo.get_purchase(row.purchase_id).payment_status == P.SETTLEMENT_UNKNOWN
     assert calls == [row.purchase_id]
     assert any(f.code == "SETTLEMENT_UNKNOWN" for f in deps.repo.findings_for_purchase(row.purchase_id))
+
+
+# ---- #76: retry reconcile for SETTLEMENT_UNKNOWN rows left by an earlier run --------------------------------------
+
+UNKNOWN_TX = "0x" + "c7" * 32
+
+
+def _proven_reader(calls):
+    async def reader(network, from_addr, nonce, pay_to, value_minor, since_ts):
+        calls.append(nonce)
+        return SimpleNamespace(used=True, block_number=900, block_timestamp=int(time.time()), event="used",
+                               tx_hash=UNKNOWN_TX, transfer_ok=True, event_block=899, search_complete=True)
+    return reader
+
+
+def _failing_reader(calls):
+    async def reader(network, from_addr, nonce, pay_to, value_minor, since_ts):
+        calls.append(nonce)
+        raise ConnectionError("rpc down")
+    return reader
+
+
+def _backdate(repo, pid, age_s):
+    repo.conn.execute("UPDATE purchases SET updated_at = ? WHERE purchase_id = ?", (time.time() - age_s, pid))
+
+
+def _old_unknown(repo, intent, age_s=STALE_S + 30, finding=True):
+    """A SETTLEMENT_UNKNOWN row an earlier run left behind: signed payload evidence, optional open finding."""
+    row = seed(repo, P.SETTLEMENT_UNKNOWN, intent=intent)
+    repo.add_evidence(row.purchase_id, EvidenceKind.PAYMENT_PAYLOAD, {
+        "header": "stored-header", "from": "0x" + "11" * 20, "to": row.pay_to or "0x" + "22" * 20,
+        "value": "500000", "nonce": f"0x{intent}", "validAfter": "0", "validBefore": str(int(time.time()) + 3600),
+        "network": row.network})
+    if finding:
+        _ensure_unknown_finding(repo, repo.get_purchase(row.purchase_id))
+    _backdate(repo, row.purchase_id, age_s)
+    return repo.get_purchase(row.purchase_id)
+
+
+def _open_unknown_findings(repo, pid):
+    return [f for f in repo.findings_for_purchase(pid) if f.code == FindingCode.SETTLEMENT_UNKNOWN and f.resolved_at is None]
+
+
+async def test_old_unknown_row_with_finding_is_reconciled_at_startup(deps):
+    calls = []
+    deps.chain_reader = _proven_reader(calls)
+    row = _old_unknown(deps.repo, "old")
+    assert _open_unknown_findings(deps.repo, row.purchase_id)
+    await run_startup_recovery(deps)
+    got = deps.repo.get_purchase(row.purchase_id)
+    assert got.payment_status == P.SETTLED and got.settlement_tx == UNKNOWN_TX
+    assert _open_unknown_findings(deps.repo, row.purchase_id) == []
+    assert len(calls) == 1
+
+
+async def test_old_unknown_row_without_finding_is_found_via_purchase_list(deps):
+    calls = []
+    deps.chain_reader = _proven_reader(calls)
+    row = _old_unknown(deps.repo, "nofinding", finding=False)
+    assert deps.repo.findings_for_purchase(row.purchase_id) == []
+    await run_startup_recovery(deps)
+    assert deps.repo.get_purchase(row.purchase_id).payment_status == P.SETTLED
+    assert len(calls) == 1
+
+
+async def test_young_unknown_row_is_left_to_its_live_call(deps):
+    calls = []
+    deps.chain_reader = _proven_reader(calls)
+    row = _old_unknown(deps.repo, "young", age_s=5)
+    await run_startup_recovery(deps)
+    assert deps.repo.get_purchase(row.purchase_id).payment_status == P.SETTLEMENT_UNKNOWN
+    assert calls == []
+
+
+async def test_unknown_pass_is_capped_at_max_rows_oldest_first(deps, caplog):
+    calls = []
+    deps.chain_reader = _proven_reader(calls)
+    n = recovery_mod.UNKNOWN_RETRY_MAX + 2
+    rows = [_old_unknown(deps.repo, f"cap{i}", age_s=STALE_S + 100 - i) for i in range(n)]  # cap0 is the oldest
+    with caplog.at_level("INFO", logger="payguard.recovery"):
+        await run_startup_recovery(deps)
+    statuses = [deps.repo.get_purchase(r.purchase_id).payment_status for r in rows]
+    assert len(calls) == recovery_mod.UNKNOWN_RETRY_MAX
+    assert statuses == [P.SETTLED] * recovery_mod.UNKNOWN_RETRY_MAX + [P.SETTLEMENT_UNKNOWN] * 2
+    assert "2 left" in caplog.text
+
+
+async def test_unknown_pass_stops_when_total_budget_is_spent(deps, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(recovery_mod, "time", SimpleNamespace(time=time.time, monotonic=lambda: clock[0]))
+    monkeypatch.setattr(recovery_mod, "UNKNOWN_RETRY_BUDGET_S", 50.0)
+    seen = []
+
+    async def slow(d, row, deadline):
+        seen.append((row.purchase_id, deadline))
+        clock[0] += 30.0  # each row burns 30 s of the 50 s pass budget
+        return row
+
+    monkeypatch.setattr(recovery_mod, "reconcile_and_finish", slow)
+    rows = [_old_unknown(deps.repo, f"b{i}", age_s=STALE_S + 100 - i) for i in range(3)]
+    await run_startup_recovery(deps)
+    assert [pid for pid, _ in seen] == [rows[0].purchase_id, rows[1].purchase_id]
+    # first row: full call budget; second row: clipped to what is left of the pass budget
+    assert seen[0][1] == 1000.0 + recovery_mod.CALL_BUDGET_S and seen[1][1] == 1050.0
+
+
+async def test_unknown_pass_continues_after_a_row_raises(deps, monkeypatch, caplog):
+    seen = []
+
+    async def flaky(d, row, deadline):
+        seen.append(row.purchase_id)
+        if len(seen) == 1:
+            raise RuntimeError("boom")
+        return row
+
+    monkeypatch.setattr(recovery_mod, "reconcile_and_finish", flaky)
+    a = _old_unknown(deps.repo, "ra", age_s=STALE_S + 50)
+    b = _old_unknown(deps.repo, "rb", age_s=STALE_S + 40)
+    with caplog.at_level("INFO", logger="payguard.recovery"):
+        await run_startup_recovery(deps)
+    assert seen == [a.purchase_id, b.purchase_id]
+    assert "boom" in caplog.text
+
+
+async def test_candidate_gathering_failure_is_logged_not_fatal(deps, monkeypatch, caplog):
+    def broken(*_a, **_k):
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(deps.repo, "list_findings", broken)
+    with caplog.at_level("INFO", logger="payguard.recovery"):
+        await run_startup_recovery(deps)
+    assert "store down" in caplog.text
+
+
+async def test_row_moved_to_unknown_by_phase1_is_reconciled_once(deps, monkeypatch):
+    seen = []
+
+    async def counting(d, row, deadline):
+        seen.append(row.purchase_id)
+        return d.repo.get_purchase(row.purchase_id)
+
+    monkeypatch.setattr(recovery_mod, "reconcile_and_finish", counting)
+    row = seed(deps.repo, P.SENT, intent="p1", age_s=STALE_S + 5)
+    real_update = deps.repo.update_status
+
+    def update_keeping_age(pid, *a, **k):  # keep the row "old" so only the phase-2 exclusion prevents a 2nd reconcile
+        ok = real_update(pid, *a, **k)
+        _backdate(deps.repo, pid, STALE_S + 5)
+        return ok
+
+    monkeypatch.setattr(deps.repo, "update_status", update_keeping_age)
+    await run_startup_recovery(deps)
+    assert deps.repo.get_purchase(row.purchase_id).payment_status == P.SETTLEMENT_UNKNOWN
+    assert seen == [row.purchase_id]
+
+
+async def test_unknown_pass_makes_no_status_write_of_its_own(deps, monkeypatch):
+    calls = []
+    deps.chain_reader = _failing_reader(calls)
+    row = _old_unknown(deps.repo, "nowrite")
+    before = deps.repo.get_purchase(row.purchase_id).history
+    writes = []
+    real = deps.repo.update_status
+
+    def spy(*a, **k):
+        writes.append(a)
+        return real(*a, **k)
+
+    monkeypatch.setattr(deps.repo, "update_status", spy)
+    await run_startup_recovery(deps)
+    got = deps.repo.get_purchase(row.purchase_id)
+    assert calls  # the pass did run reconcile (its chain read failed: no information)
+    assert writes == [] and got.payment_status == P.SETTLEMENT_UNKNOWN and got.history == before
+    assert len(_open_unknown_findings(deps.repo, row.purchase_id)) == 1
+
+
+async def test_settled_old_rows_are_not_candidates(deps, caplog):
+    seed(deps.repo, P.SETTLED, intent="done", age_s=STALE_S + 5)
+    with caplog.at_level("INFO", logger="payguard.recovery"):
+        await run_startup_recovery(deps)
+    assert "startup recovery: nothing to do" in caplog.text

@@ -2,6 +2,10 @@
 
 Spawned by the FastMCP lifespan as a background task after a 2 s sleep, so it never blocks the
 initialize handshake. Touches only rows older than STALE_S; every write is compare-and-set.
+
+Order: stuck in-flight rows (phase 1 CAS, phase 2 reconcile) -> a bounded retry of SETTLEMENT_UNKNOWN rows an
+earlier run left behind (#76; it makes no status write itself, reconcile does its own CAS) -> one re-check of
+in-flight rows that were too young to touch.
 """
 from __future__ import annotations
 
@@ -9,7 +13,15 @@ import logging
 import time
 from typing import Any
 
-from payguard.models import IN_FLIGHT, SIGNED_IN_FLIGHT, UNSIGNED_IN_FLIGHT, PaymentStatus, history_entry
+from payguard.models import (
+    IN_FLIGHT,
+    SIGNED_IN_FLIGHT,
+    UNSIGNED_IN_FLIGHT,
+    FindingCode,
+    PaymentStatus,
+    Purchase,
+    history_entry,
+)
 from payguard.purchase import CALL_BUDGET_S, _ensure_unknown_finding, reconcile_and_finish
 
 log = logging.getLogger(__name__)
@@ -19,6 +31,13 @@ STALE_S = 60.0
 # than STALE_S belongs to a dead process. Rows younger than that may still belong to a process that
 # just died, so they get exactly one re-check once they would have turned stale.
 RECHECK_MARGIN_S = 1.0
+# #76 unknown-retry pass. A row whose earlier reconcile failed (RPC outage) or was cut short by a crash is no longer
+# in-flight, so list_stuck never returns it. Startup retries a few of them; any backlog is left for
+# reconcile_purchase or the next start, so the pass can never hold the server's background task for long.
+UNKNOWN_SCAN_LIMIT = 200  # newest purchases scanned for an unknown row whose finding was never written (crash)
+UNKNOWN_RETRY_MAX = 5
+UNKNOWN_RETRY_BUDGET_S = 90.0  # monotonic budget for the whole pass
+UNKNOWN_MIN_ROW_S = 1.0  # a row is not started with less than this left of the pass budget
 
 
 def _phase1(deps: Any, stuck: list[Any]) -> list[str]:
@@ -52,6 +71,57 @@ async def _phase2(deps: Any, purchase_ids: list[str]) -> None:
             log.exception("startup recovery: reconcile failed for %s", pid)
 
 
+def _stale_unknown(row: Purchase | None) -> bool:
+    """SETTLEMENT_UNKNOWN and untouched for STALE_S, so no live call can still own it (wall clock: row age only)."""
+    return (row is not None and row.payment_status == P.SETTLEMENT_UNKNOWN
+            and time.time() - row.updated_at >= STALE_S)
+
+
+def _unknown_candidates(deps: Any) -> list[Purchase]:
+    """Stale SETTLEMENT_UNKNOWN rows of this server's principal, oldest updated_at first. Never raises."""
+    repo = deps.repo
+    principal = deps.policy.principal_id
+    try:
+        ids = [f["purchase_id"] for f in repo.list_findings(principal, unresolved_only=True)
+               if f["code"] == FindingCode.SETTLEMENT_UNKNOWN]
+        # a crash between the status write and the finding write leaves an unknown row with no finding
+        ids += [r.purchase_id for r in repo.list_purchases(principal, limit=UNKNOWN_SCAN_LIMIT)
+                if r.payment_status == P.SETTLEMENT_UNKNOWN]
+        rows = [repo.get_purchase(pid) for pid in dict.fromkeys(ids)]
+    except Exception:  # noqa: BLE001 - a store error skips this pass; it must not kill the recovery task
+        log.exception("startup recovery: could not list SETTLEMENT_UNKNOWN rows")
+        return []
+    return sorted((r for r in rows if _stale_unknown(r)), key=lambda r: r.updated_at)
+
+
+async def _retry_unknown(deps: Any, candidates: list[Purchase], exclude: set[str]) -> None:
+    """Reconcile up to UNKNOWN_RETRY_MAX stale unknown rows within UNKNOWN_RETRY_BUDGET_S. No status write here."""
+    todo = [r for r in candidates if r.purchase_id not in exclude]
+    if not todo:
+        return
+    pass_deadline = time.monotonic() + UNKNOWN_RETRY_BUDGET_S
+    attempted = 0
+    examined = 0
+    for row in todo:
+        if attempted >= UNKNOWN_RETRY_MAX or pass_deadline - time.monotonic() < UNKNOWN_MIN_ROW_S:
+            break
+        examined += 1
+        pid = row.purchase_id
+        try:
+            current = deps.repo.get_purchase(pid)  # phase 2 or a live call may have decided it meanwhile
+            if not _stale_unknown(current):
+                continue
+            attempted += 1
+            deadline = min(time.monotonic() + CALL_BUDGET_S, pass_deadline)
+            done = await reconcile_and_finish(deps, current, deadline)
+            log.info("startup recovery: retried unknown %s -> %s", pid, done.payment_status)
+        except Exception:  # noqa: BLE001 - one bad row must not abort the pass (CancelledError still propagates)
+            log.exception("startup recovery: unknown retry failed for %s", pid)
+    left = len(todo) - examined
+    log.info("startup recovery: retried %d SETTLEMENT_UNKNOWN row(s); %d left for reconcile_purchase or the next start",
+             attempted, left)
+
+
 async def _pass(deps: Any) -> None:
     await _phase2(deps, _phase1(deps, deps.repo.list_stuck(STALE_S)))
 
@@ -61,10 +131,13 @@ async def run_startup_recovery(deps: Any) -> None:
     stuck = repo.list_stuck(STALE_S)
     handled = {r.purchase_id for r in stuck}
     young = [r for r in repo.list_stuck(0) if r.purchase_id not in handled and r.payment_status in IN_FLIGHT]
-    if not stuck and not young:
+    unknown = _unknown_candidates(deps)
+    if not stuck and not young and not unknown:
         log.info("startup recovery: nothing to do")
         return
-    await _phase2(deps, _phase1(deps, stuck))
+    moved = _phase1(deps, stuck)
+    await _phase2(deps, moved)
+    await _retry_unknown(deps, unknown, set(moved))
     if young:
         now = time.time()
         youngest_age = min(now - r.updated_at for r in young)
