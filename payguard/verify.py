@@ -72,7 +72,7 @@ def non_empty(service: Service, args: dict[str, Any], art: Artifact) -> Validato
 def pdf_page_count(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
     from payguard import artifacts as _artifacts
 
-    expected = int(args.get("pages", 0))
+    expected = int(args["pages"])  # missing pages raises -> UNVERIFIED, never "seller sent != 0 pages"
     actual = art.page_count if art.page_count is not None else (_artifacts.pdf_page_count(art.path) if art.path else None)
     ok = actual is not None and actual == expected
     detail: dict[str, Any] = {"expected": expected, "actual": actual}

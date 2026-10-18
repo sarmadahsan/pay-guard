@@ -120,6 +120,12 @@ def test_pdf_page_count_validator(reg, tmp_path):
     assert ok["pdf_page_count"][1] is True
 
 
+def test_pdf_page_count_without_pages_arg_raises(reg, tmp_path):
+    art = store_artifact(pdf_bytes(12), "application/pdf", "p11", tmp_path)
+    with pytest.raises(KeyError):
+        run_validators(reg["convert"], {"doc_id": "d"}, art)
+
+
 def test_content_hash_validator(tmp_path):
     from dataclasses import replace
     from payguard.verify import content_hash
