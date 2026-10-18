@@ -126,6 +126,23 @@ def test_pdf_page_count_without_pages_arg_raises(reg, tmp_path):
         run_validators(reg["convert"], {"doc_id": "d"}, art)
 
 
+@pytest.mark.parametrize("pages", [12.9, True, 0, -1, "abc", None])
+def test_pdf_page_count_rejects_invalid_pages_arg(reg, tmp_path, pages):
+    art = store_artifact(pdf_bytes(12), "application/pdf", "p12", tmp_path)
+    with pytest.raises(ValueError):
+        run_validators(reg["convert"], {"doc_id": "d", "pages": pages}, art)
+
+
+def test_content_hash_pathless_file_artifact_raises_inline_json_passes():
+    from dataclasses import replace
+    from payguard.verify import content_hash
+    svc = replace(load_registry(base_url="http://x")["report"], validators=("content_hash",))
+    with pytest.raises(ValueError):
+        content_hash(svc, {}, Artifact("pdf", "application/pdf", "0" * 64, 10))
+    art = json_art({"a": 1})
+    assert content_hash(svc, {}, art) == ("content_hash", True, {"sha256": art.sha256, "recomputed": False})
+
+
 def test_content_hash_validator(tmp_path):
     from dataclasses import replace
     from payguard.verify import content_hash

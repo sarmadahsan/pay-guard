@@ -72,7 +72,12 @@ def non_empty(service: Service, args: dict[str, Any], art: Artifact) -> Validato
 def pdf_page_count(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
     from payguard import artifacts as _artifacts
 
-    expected = int(args["pages"])  # missing pages raises -> UNVERIFIED, never "seller sent != 0 pages"
+    raw = args["pages"]  # missing pages raises -> UNVERIFIED, never "seller sent != 0 pages"
+    if isinstance(raw, str) and raw.strip().isdigit():
+        raw = int(raw)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ValueError(f"pages must be a positive whole number, got {raw!r}")  # -> UNVERIFIED
+    expected = raw
     actual = art.page_count if art.page_count is not None else (_artifacts.pdf_page_count(art.path) if art.path else None)
     ok = actual is not None and actual == expected
     detail: dict[str, Any] = {"expected": expected, "actual": actual}
@@ -89,6 +94,8 @@ def content_hash(service: Service, args: dict[str, Any], art: Artifact) -> Valid
         actual = hashlib.sha256(Path(art.path).read_bytes()).hexdigest()
         ok = actual == art.sha256
         return "content_hash", ok, {"sha256": art.sha256, "recomputed": True, **({} if ok else {"reason": f"content hash {actual} != recorded {art.sha256}"})}
+    if art.kind != "json":
+        raise ValueError(f"{art.kind} artifact has no path to re-hash")  # -> UNVERIFIED
     return "content_hash", True, {"sha256": art.sha256, "recomputed": False}
 
 
