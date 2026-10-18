@@ -47,6 +47,13 @@ def _usdc(n: int) -> str:
     return f"{n // 1_000_000}.{n % 1_000_000:06d}"
 
 
+def usdc(minor: int | None) -> str | None:
+    """Integer-only USDC formatting (6 decimals); sign-safe for negative remaining budgets."""
+    if minor is None:
+        return None
+    return ("-" if minor < 0 else "") + _usdc(abs(minor))
+
+
 def explorer_url(row: Purchase) -> str | None:
     base = EXPLORER.get(row.network)
     if not base:
@@ -56,6 +63,66 @@ def explorer_url(row: Purchase) -> str | None:
     if row.pay_to and row.payment_status == PaymentStatus.SETTLED:
         return f"{base}/address/{row.pay_to}#tokentxns"
     return None
+
+
+def delivery_summary(row: Purchase, verification: list[dict[str, Any]], findings: list[Finding]) -> dict[str, Any]:
+    """A level derived ONLY from checks that ran. Never a guessed probability (schema-valid is not fact-checked)."""
+    passed = [v["name"] for v in verification if v.get("passed") is True]
+    failed = [v["name"] for v in verification if v.get("passed") is False]
+    fs = row.fulfillment_status
+    if row.payment_status != PaymentStatus.SETTLED:
+        level, basis = "none", "no settled payment"
+    elif fs == FulfillmentStatus.VERIFIED:
+        level, basis = "verified", "all checks passed"
+    elif fs == FulfillmentStatus.FAILED:
+        level, basis = "partial", "artifact delivered but failed: " + ", ".join(failed)
+    elif fs == FulfillmentStatus.NO_DELIVERY:
+        level, basis = "none", "settled with no artifact"
+    else:
+        level, basis = "unverified", "checks could not run"
+    return {"level": level, "basis": basis, "checks_passed": len(passed), "checks_total": len(verification), "failed": failed,
+            "artifact_sha256": row.artifact_hash,
+            "proven_findings": [f.code for f in findings if f.severity == "proven" and f.resolved_at is None]}
+
+
+def transaction_summary(row: Purchase, evidence: list[Any]) -> list[dict[str, Any]]:
+    """What money moved, or may have moved, for this purchase. Empty when nothing was ever sent."""
+    base = {"amount_minor": row.authorized_amount_minor, "amount_usdc": usdc(row.authorized_amount_minor),
+            "network": row.network, "pay_to": row.pay_to, "settlement_tx": row.settlement_tx, "block_number": None,
+            "explorer_url": explorer_url(row), "valid_before": row.valid_before}
+    if row.payment_status == PaymentStatus.SETTLED:
+        settle = [e.payload for e in evidence if e.kind == EvidenceKind.SETTLEMENT]
+        last = settle[-1] if settle else {}
+        proof = "chain_check" if str(last.get("source", "")).startswith("chain") else "seller_receipt"
+        return [{**base, "status": "settled", "proof": proof, "block_number": last.get("block_number"),
+                 "settlement_tx": row.settlement_tx or last.get("transaction")}]
+    if row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:
+        return [{**base, "status": "unknown", "proof": "pending", "explorer_url": None}]
+    if row.payment_status in (PaymentStatus.PAYLOAD_SIGNED, PaymentStatus.SENT):
+        return [{**base, "status": "in_progress", "proof": "pending", "explorer_url": None}]
+    return []  # REJECTED, PAYMENT_FAILED, ABANDONED, or nothing signed yet: no money moved
+
+
+def budget_summary(deps: Any) -> dict[str, Any]:
+    spent = deps.repo.spent_minor(deps.policy.principal_id)
+    total = deps.policy.total_budget_minor
+    return {"total_budget_minor": total, "spent_minor": spent, "remaining_minor": total - spent,
+            "spent_usdc": usdc(spent), "remaining_usdc": usdc(total - spent)}
+
+
+def compact_purchase(deps: Any, row: Purchase) -> dict[str, Any]:
+    """One line per purchase for list_purchases."""
+    evidence = deps.repo.list_evidence(row.purchase_id)
+    verification = [e.payload for e in evidence if e.kind == EvidenceKind.VALIDATOR]
+    findings = deps.repo.findings_for_purchase(row.purchase_id)
+    tx = transaction_summary(row, evidence)
+    return {"purchase_id": row.purchase_id, "purchase_intent_id": row.purchase_intent_id, "service_id": row.service_id,
+            "attempt": row.attempt, "payment_status": "IN_PROGRESS" if row.payment_status in IN_FLIGHT else str(row.payment_status),
+            "fulfillment_status": str(row.fulfillment_status),
+            "delivery_level": delivery_summary(row, verification, findings)["level"],
+            "amount_usdc": usdc(row.authorized_amount_minor), "settlement_tx": tx[0]["settlement_tx"] if tx else row.settlement_tx,
+            "proof": tx[0]["proof"] if tx else None, "explorer_url": explorer_url(row),
+            "unresolved_findings": [f.code for f in findings if f.resolved_at is None], "created_at": row.created_at}
 
 
 def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
@@ -87,4 +154,7 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
         "findings": [f.to_dict() for f in findings],
         "artifact": art.summary() if art else None,
         "safe_next_actions": safe_next_actions(row, findings),
+        "transactions": transaction_summary(row, evidence),
+        "delivery": delivery_summary(row, verification, findings),
+        "budget": budget_summary(deps),
     }

@@ -177,6 +177,13 @@ class SqliteRepository:
         ).fetchall()
         return [_row(r) for r in rows]
 
+    def list_purchases(self, principal_id: str, limit: int = 50) -> list[Purchase]:
+        rows = self._q(
+            "SELECT * FROM purchases WHERE principal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (principal_id, int(limit)),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
     def update_status(self, purchase_id: str, expected: PaymentStatus, new: PaymentStatus,
                       history_entry: dict[str, Any] | None = None, **fields: Any) -> bool:
         expected, new = PaymentStatus(expected), PaymentStatus(new)

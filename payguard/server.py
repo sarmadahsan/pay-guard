@@ -26,7 +26,7 @@ from payguard import recovery  # noqa: E402
 from payguard.deps import get_deps  # noqa: E402
 from payguard.models import PaymentStatus  # noqa: E402
 from payguard.purchase import CALL_BUDGET_S, purchase, reconcile_and_finish  # noqa: E402
-from payguard.response import build_response  # noqa: E402
+from payguard.response import budget_summary, build_response, compact_purchase  # noqa: E402
 
 log = logging.getLogger("payguard.server")
 
@@ -93,8 +93,7 @@ async def list_services() -> list[dict[str, Any]]:
 @mcp.tool(description="Show the spending mandate (budget, per-purchase cap, allowed services) and what has been spent.")
 async def get_spending_policy() -> dict[str, Any]:
     deps = get_deps()
-    spent = deps.repo.spent_minor(deps.policy.principal_id)
-    return {**deps.policy.to_dict(), "spent_minor": spent, "remaining_minor": deps.policy.total_budget_minor - spent, "currency": "USDC"}
+    return {**deps.policy.to_dict(), "currency": "USDC", **budget_summary(deps)}
 
 
 @mcp.tool(description="Get a purchase record with its history, evidence-backed findings and safe next actions.")
@@ -110,6 +109,13 @@ async def get_purchase(purchase_id: str) -> dict[str, Any]:
 async def list_findings(unresolved_only: bool = True) -> list[dict[str, Any]]:
     deps = get_deps()
     return deps.repo.list_findings(deps.policy.principal_id, unresolved_only=unresolved_only)
+
+
+@mcp.tool(description="List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. Read-only.")
+async def list_purchases(limit: int = 50) -> dict[str, Any]:
+    deps = get_deps()
+    rows = deps.repo.list_purchases(deps.policy.principal_id, limit=max(1, min(int(limit), 200)))
+    return {"budget": budget_summary(deps), "count": len(rows), "purchases": [compact_purchase(deps, r) for r in rows]}
 
 
 @mcp.tool(description="Re-check an unknown settlement on-chain. Never creates a new payment; at most one identical resend.")
