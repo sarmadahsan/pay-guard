@@ -133,7 +133,7 @@ async def list_services() -> list[dict[str, Any]]:
     return [s.to_dict() for s in get_deps().registry.values()]
 
 
-@mcp.tool(description="Show the spending mandate (budget, per-purchase cap, allowed services) and what has been spent.")
+@mcp.tool(description="Show the spending mandate (budget, per-purchase cap, allowed services, auto_dispute) and what has been spent.")
 async def get_spending_policy() -> dict[str, Any]:
     deps = get_deps()
     return {**deps.policy.to_dict(), "currency": "USDC", **budget_summary(deps)}

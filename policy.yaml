@@ -11,3 +11,6 @@ allowed_services:
   - convert
   - intel
   - bazaar
+# PayGuard files the dispute itself when a purchase ends with a proven loss (PAID_NO_DELIVERY, FULFILLMENT_FAILED,
+# PRICE_MISMATCH). Moves no money; the agent never has to decide to complain.
+auto_dispute: true

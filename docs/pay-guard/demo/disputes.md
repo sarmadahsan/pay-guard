@@ -17,6 +17,38 @@ with `safe_next_actions` of `human_review`, `report_to_seller`. Two admin tools 
 
 Filing moves no money, so the agent may do it unprompted. PayGuard arbitrates nothing; it documents.
 
+## Automatic disputes
+
+**The protection is a policy, not a prompt.** With `auto_dispute: true` in `policy.yaml` (the shipped
+default for the demo), the agent never has to decide to complain: whenever a purchase ends with an
+unresolved proven `PAID_NO_DELIVERY`, `FULFILLMENT_FAILED` or `PRICE_MISMATCH` finding, PayGuard files
+the dispute itself, inside the same tool call, through the same code path as `file_dispute`. The row the
+paid tool returns already carries it:
+
+- `dispute: {filed_by: "policy", status: "awaiting_reply", ...}` and the headline ends `· dispute filed`;
+- the history ends `FULFILLMENT_FAILED` → `DISPUTE_FILED {filed_by: policy, dispute_filed: true}`, so a
+  judge can see it happened in-call, after the finding and before the agent saw anything;
+- `safe_next_actions` gains `check_dispute` (reading the reply is free and safe), still never pay or retry.
+
+Rules the hook keeps:
+
+- **One dispute per purchase.** A retry of the same `purchase_intent_id` (the `DUPLICATE_SUSPECTED` path),
+  a later `reconcile_purchase`, startup recovery and a manual `file_dispute` all find the dispute on record
+  and file nothing new.
+- **The outcome never changes.** If the send fails (bad Primitive key, no seller contact, timeout), payment
+  and fulfillment status stay exactly what the checks proved; the failure is logged and recorded as
+  `seller_error` evidence `{reason: "auto_dispute failed", ...}`, and the agent can still call `file_dispute`.
+  One automatic attempt per purchase.
+- **The 45 s call budget wins.** With fewer than 5 s left the hook skips and logs; the next terminal pass
+  (reconcile or recovery) files it. Nothing in the hook can create a payment.
+- `get_spending_policy` reports `auto_dispute` next to the budget, so the mandate is inspectable. Set it to
+  `false` to go back to agent-initiated disputes only. The loader rejects anything but `true`/`false`.
+
+Where it runs: `run_from_quote` and `reconcile_and_finish` in `payguard/purchase.py` end in
+`disputes.auto_dispute(deps, row, deadline)`, so `purchase`, `reconcile_purchase`, startup recovery and
+`scripts/approve_retry.py` all benefit. No new env var: the backend is the one `file_dispute` uses (dry run
+when `PRIMITIVE_API_KEY` is empty).
+
 ## Env
 
 In `.env` (never committed):
@@ -43,7 +75,10 @@ Restart the PayGuard MCP server after editing `.env`.
 
 ## The prompts
 
-After the Meridian beat (`docs/pay-guard/demo/meridian.md`) has left a `PAID_NO_DELIVERY` row:
+With `auto_dispute: true` the Meridian beat (`docs/pay-guard/demo/meridian.md`) already ends with the
+dispute filed: the `get_intel_report` result shows `dispute.filed_by: "policy"`, the headline ends
+`· dispute filed`, and `history[-1]` is `DISPUTE_FILED`. The prompts below are the manual path
+(`auto_dispute: false`, or a seller whose contact could not be resolved in-call):
 
 1. > File a dispute for every unresolved finding.
 
@@ -69,7 +104,8 @@ After the Meridian beat (`docs/pay-guard/demo/meridian.md`) has left a `PAID_NO_
   `AuthorizationUsed` event, visible in `get_purchase` and `list_purchases`.
 - No second payment anywhere in the flow. The dispute tools cannot spend; the human decides.
 
-Covered offline by `tests/test_disputes.py` (fake seller + fake Primitive over `httpx.MockTransport`).
+Covered offline by `tests/test_disputes.py` (fake seller + fake Primitive over `httpx.MockTransport`),
+including the `auto_dispute` hook: on, off, verified purchase, failing sender, duplicate call, reconcile path.
 The Primitive API shape was verified against `https://www.primitive.dev/openapi.json` on 2026-10-17:
 `POST /send-mail` (single `to` address, inline `attachments[{filename, content_type, content_base64}]`)
 and `GET /sent-emails/{id}/reply` (one best reply or `null`).

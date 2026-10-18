@@ -72,6 +72,34 @@ def test_load_policy_yaml(tmp_path):
                  "allowed_networks: ['eip155:84532']\nallowed_services: [report]\n")
     p = load_policy(f)
     assert p == Policy("demo", 5_000_000, 2_500_000, ("eip155:84532",), ("report",))
+    assert p.auto_dispute is False and p.to_dict()["auto_dispute"] is False  # default: the agent must ask
+
+
+@pytest.mark.parametrize("text,expected", [("auto_dispute: true\n", True), ("auto_dispute: false\n", False), ("", False)])
+def test_load_policy_auto_dispute_flag(tmp_path, text, expected):
+    f = tmp_path / "policy.yaml"
+    f.write_text(_BASE + text)
+    assert load_policy(f).auto_dispute is expected
+
+
+def test_shipped_policy_turns_auto_dispute_on():
+    from pathlib import Path
+
+    p = load_policy(Path(__file__).resolve().parents[1] / "policy.yaml")
+    assert p.auto_dispute is True and p.to_dict()["auto_dispute"] is True
+
+
+async def test_get_spending_policy_reports_auto_dispute(monkeypatch, deps):
+    import json
+    from dataclasses import replace
+
+    import payguard.server as srv
+
+    deps.policy = replace(deps.policy, auto_dispute=True)
+    monkeypatch.setattr(srv, "get_deps", lambda: deps)
+    out = await srv.mcp.call_tool("get_spending_policy", {})
+    data = out.structured_content if hasattr(out, "structured_content") else json.loads(out[0].text)
+    assert data["auto_dispute"] is True and data["principal_id"] == "p"
 
 
 @pytest.mark.parametrize("bad", [-1_000_000, 0, True, 1.5, "500000"])
@@ -99,6 +127,9 @@ _BASE = "principal_id: d\ntotal_budget_minor: 5000000\nper_purchase_cap_minor: 2
     "principal_id: d\ntotal_budget_minor: -1\nper_purchase_cap_minor: 5\n",
     "principal_id: d\ntotal_budget_minor: true\nper_purchase_cap_minor: 5\n",
     "principal_id: d\ntotal_budget_minor: 5\nper_purchase_cap_minor: -5\n",
+    _BASE + "auto_dispute: yes please\n",
+    _BASE + "auto_dispute: 1\n",
+    _BASE + "auto_dispute: [true]\n",
 ])
 def test_load_policy_rejects_invalid(tmp_path, text):
     f = tmp_path / "policy.yaml"

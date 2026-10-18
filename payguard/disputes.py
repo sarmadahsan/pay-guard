@@ -8,12 +8,14 @@ The signed authorization (payment_payload.header / signature) is a bearer token 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
-from payguard.models import EvidenceKind, FindingCode, NextAction, history_entry
+from payguard.models import EvidenceKind, FindingCode, NextAction, Purchase, history_entry
 from payguard.primitive import DryRunBackend, PrimitiveBackend, build_backend
 from payguard.registry import Service
 from payguard.response import dispute_state, explorer_url, usdc  # noqa: F401  (dispute_state re-exported)
@@ -27,6 +29,8 @@ CONTEXT_KINDS = (EvidenceKind.QUOTE, EvidenceKind.SELECTED_REQUIREMENT, Evidence
 WELL_KNOWN = "/.well-known/x402-seller.json"
 BODY_PREVIEW = 400
 REPLY_CAP = 4000
+AUTO_MIN_REMAINING_S = 5.0  # Task 8.6: skip the in-call auto dispute when less than this is left of the 45 s call budget
+AUTO_FAILED = "auto_dispute failed"  # SELLER_ERROR evidence reason; one automatic attempt per purchase
 Backend = PrimitiveBackend | DryRunBackend
 
 
@@ -167,11 +171,21 @@ def _dispute_result(deps: Any, purchase_id: str, d: dict[str, Any], *, subject: 
             "body_preview": (body if body is not None else d.get("body_preview") or "")[:BODY_PREVIEW],
             "evidence_count": evidence_count if evidence_count is not None else d.get("evidence_count"),
             "explorer_url": explorer_url(row) if row else None, "backend": d.get("backend"), "sent_at": d.get("sent_at"),
-            "safe_next_actions": [NextAction.HUMAN_REVIEW]}
+            "filed_by": d.get("filed_by", "agent"), "safe_next_actions": [NextAction.HUMAN_REVIEW, NextAction.CHECK_DISPUTE]}
 
 
 async def file_dispute(deps: Any, purchase_id: str, backend: Backend | None = None) -> dict[str, Any]:
-    """One dispute per purchase: a second call returns the one already on record. Refuses rows with nothing to dispute."""
+    """The `file_dispute` tool body: the agent asks for the dispute explicitly. See file_for_purchase."""
+    return await file_for_purchase(deps, purchase_id, backend)
+
+
+async def file_for_purchase(deps: Any, purchase_id: str, backend: Backend | None = None, *,
+                            filed_by: str = "agent") -> dict[str, Any]:
+    """File the one dispute a purchase may have; shared by the tool and the auto_dispute policy hook.
+
+    One dispute per purchase: a second call returns the one already on record (`already_filed`). Refuses rows with
+    nothing to dispute or no seller contact with an `error` key. Raises when the mail backend fails (nothing recorded).
+    """
     repo = deps.repo
     if repo.get_purchase(purchase_id) is None:
         return {"error": f"purchase {purchase_id} not found"}
@@ -194,11 +208,60 @@ async def file_dispute(deps: Any, purchase_id: str, backend: Backend | None = No
     sent = await backend.send_mail(to=to, subject=subject, body_text=body, bundle=bundle, purchase_id=purchase_id)
     record = {"dispute_id": sent.id, "to": to, "from": sent.from_addr, "subject": subject, "sent_at": sent.sent_at,
               "backend": sent.backend, "contact_source": source, "body_preview": body[:BODY_PREVIEW],
-              "evidence_count": len(bundle["evidence"]), "finding_codes": [f["code"] for f in bundle["findings"]]}
+              "evidence_count": len(bundle["evidence"]), "finding_codes": [f["code"] for f in bundle["findings"]],
+              "filed_by": filed_by}
     repo.add_evidence(purchase_id, EvidenceKind.DISPUTE, record)
-    repo.append_history(purchase_id, history_entry("DISPUTE_FILED", dispute_id=sent.id, to=to, backend=sent.backend))
-    log.info("dispute filed for %s via %s to %s (id %s)", purchase_id, sent.backend, to, sent.id)
+    repo.append_history(purchase_id, history_entry("DISPUTE_FILED", dispute_id=sent.id, to=to, backend=sent.backend,
+                                                   filed_by=filed_by, dispute_filed=True))
+    log.info("dispute filed for %s by %s via %s to %s (id %s)", purchase_id, filed_by, sent.backend, to, sent.id)
     return _dispute_result(deps, purchase_id, record, subject=subject, body=body, evidence_count=len(bundle["evidence"]))
+
+
+# ---- auto_dispute (Task 8.6): the mandate files, not the agent ---------------------------------------------------
+
+def _wants_auto_dispute(deps: Any, row: Purchase) -> bool:
+    """policy.auto_dispute, an unresolved proven DISPUTABLE finding, no dispute yet, and no earlier failed attempt."""
+    if not getattr(deps.policy, "auto_dispute", False):
+        return False
+    findings = deps.repo.findings_for_purchase(row.purchase_id)
+    if not any(f.resolved_at is None and f.severity == "proven" and f.code in DISPUTABLE for f in findings):
+        return False
+    for e in deps.repo.list_evidence(row.purchase_id):
+        if e.kind == EvidenceKind.DISPUTE:
+            return False
+        if e.kind == EvidenceKind.SELLER_ERROR and e.payload.get("reason") == AUTO_FAILED:
+            return False  # one automatic attempt; the agent (or a human) can still call file_dispute
+    return True
+
+
+async def auto_dispute(deps: Any, row: Purchase, deadline: float, backend: Backend | None = None) -> Purchase:
+    """Hook run once a purchase row is terminal and its findings are written (purchase, reconcile, startup recovery).
+
+    Never changes the purchase outcome: a failure to send is logged and recorded as SELLER_ERROR evidence with
+    reason AUTO_FAILED; a call with too little budget left is skipped and logged. Creates no payment. Returns the
+    (re-read) row so callers keep the same shape.
+    """
+    repo = deps.repo
+    pid = row.purchase_id
+    try:
+        if not _wants_auto_dispute(deps, row):
+            return row
+        remaining = deadline - time.monotonic()
+        if remaining < AUTO_MIN_REMAINING_S:
+            log.warning("auto_dispute skipped for %s: %.1f s left of the call budget", pid, remaining)
+            return row
+        async with asyncio.timeout(remaining - 1.0):
+            result = await file_for_purchase(deps, pid, backend, filed_by="policy")
+        if "error" in result:
+            raise RuntimeError(result["error"])
+    except Exception as e:  # noqa: BLE001  (TimeoutError, backend errors, contact failures: the outcome stands)
+        log.warning("auto_dispute failed for %s: %s: %s", pid, type(e).__name__, e)
+        try:
+            repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "auto_dispute", "reason": AUTO_FAILED,
+                                                                "error": f"{type(e).__name__}: {e}"[:500]})
+        except Exception:  # noqa: BLE001
+            log.exception("could not record the auto_dispute failure for %s", pid)
+    return repo.get_purchase(pid) or row
 
 
 async def check_dispute(deps: Any, purchase_id: str, backend: Backend | None = None) -> dict[str, Any]:
@@ -233,4 +296,5 @@ async def check_dispute(deps: Any, purchase_id: str, backend: Backend | None = N
             "safe_next_actions": [NextAction.HUMAN_REVIEW]}
 
 
-__all__ = ["build_bundle", "render_email", "resolve_contact", "dispute_state", "file_dispute", "check_dispute"]
+__all__ = ["build_bundle", "render_email", "resolve_contact", "dispute_state", "file_dispute", "file_for_purchase",
+           "auto_dispute", "check_dispute"]
