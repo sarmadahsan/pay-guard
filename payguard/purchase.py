@@ -141,7 +141,7 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
                            f"unpaid request failed before any payment: {type(e).__name__}")
         try:
             version = detect_payment_required_version({k: v for k, v in resp.headers.items()}, resp.content)
-        except ValueError:
+        except Exception:  # noqa: BLE001  # ValueError, or AttributeError on a non-object JSON body: both mean "not detected"
             ev = repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "quote", "status": resp.status_code,
                                                                      "reason": "no x402 payment-required response"})
             return _reject(repo, row, P.INTENT_RECORDED, RejectReason.NOT_X402,
@@ -151,7 +151,13 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
             repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "quote", "x402_version": version})
             return _reject(repo, row, P.INTENT_RECORDED, RejectReason.UNSUPPORTED_X402_VERSION,
                            f"x402 version {version} is not supported (v2 only)")
-        pr = decode_payment_required_header(resp.headers[PAYMENT_REQUIRED_HEADER])
+        try:
+            pr = decode_payment_required_header(resp.headers[PAYMENT_REQUIRED_HEADER])
+        except Exception as e:  # noqa: BLE001  # missing header (KeyError) or malformed header
+            ev = repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "quote", "status": resp.status_code,
+                                   "reason": "unusable PAYMENT-REQUIRED header", "detail": f"{type(e).__name__}: {e}"})
+            return _reject(repo, row, P.INTENT_RECORDED, RejectReason.NOT_X402,
+                           "x402 v2 response without a decodable PAYMENT-REQUIRED header", finding=True, evidence_ids=[ev])
         quote_ev = repo.add_evidence(pid, EvidenceKind.QUOTE, pr.model_dump(mode="json"))
         selected = _select_option(pr, service)
         if selected is None:
@@ -159,7 +165,12 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
                            f"no 'exact' option on {service.network} paying canonical USDC {service.asset}",
                            finding=True, evidence_ids=[quote_ev])
         sel_ev = repo.add_evidence(pid, EvidenceKind.SELECTED_REQUIREMENT, selected.model_dump(mode="json"))
-        amount = int(selected.amount)
+        raw_amount = selected.amount
+        if not (isinstance(raw_amount, str) and 1 <= len(raw_amount) <= 30 and raw_amount.isascii() and raw_amount.isdigit()):
+            return _reject(repo, row, P.INTENT_RECORDED, RejectReason.PRICE_MISMATCH,
+                           f"quoted amount {str(raw_amount)[:40]!r} is not a plain integer of minor units",
+                           finding=True, evidence_ids=[quote_ev, sel_ev])
+        amount = int(raw_amount)
         if not repo.update_status(pid, P.INTENT_RECORDED, P.QUOTED,
                                   history_entry("QUOTED", amount_minor=amount, pay_to=selected.pay_to),
                                   quoted_amount_minor=amount, asset=selected.asset, pay_to=selected.pay_to):
@@ -207,7 +218,14 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
         outcome = await send_paid_request(http, method, url, body, header, clip_timeout(service.timeout_s, deadline))
 
     # ---- 6. outcome
-    row = classify_outcome(repo, repo.get_purchase(pid), outcome, P.SENT, deps.artifact_dir, via="send")
+    try:
+        row = classify_outcome(repo, repo.get_purchase(pid), outcome, P.SENT, deps.artifact_dir, via="send")
+    except Exception as e:  # noqa: BLE001  # the row must never stay SENT
+        log.exception("classification failed for %s", pid)
+        repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "classify", "error": f"{type(e).__name__}: {e}"})
+        repo.update_status(pid, P.SENT, P.SETTLEMENT_UNKNOWN,
+                           history_entry("SETTLEMENT_UNKNOWN", via="send", reason="classification error"))
+        row = repo.get_purchase(pid)
     if row.payment_status == P.SETTLEMENT_UNKNOWN:
         return await reconcile_and_finish(deps, row, deadline)
     # ---- 7. verify
@@ -245,6 +263,14 @@ def _verify(deps: Deps, row: Purchase, service: Service) -> Purchase:
     pid = row.purchase_id
     evidence = repo.list_evidence(pid)
     artifact = artifacts.load_latest(repo, pid)
+    if artifact is None and any(e.kind == EvidenceKind.SELLER_ERROR and e.payload.get("reason") == "artifact store failed"
+                                for e in evidence):
+        ev_ids = [e.evidence_id for e in evidence if e.kind in (EvidenceKind.SETTLEMENT, EvidenceKind.SELLER_ERROR)]
+        repo.set_fulfillment(pid, FulfillmentStatus.UNVERIFIED, history_entry("UNVERIFIED", reason="artifact store failed"))
+        repo.add_finding(pid, FindingCode.FULFILLMENT_UNVERIFIED, "suspected",
+                         f"A body was delivered by '{service.id}' but could not be stored, so it was not verified",
+                         ev_ids[-3:], [NextAction.HUMAN_REVIEW])
+        return repo.get_purchase(pid)
     if artifact is None:
         proof = [e.evidence_id for e in evidence if e.kind in (EvidenceKind.SETTLEMENT, EvidenceKind.CHAIN_CHECK)]
         repo.set_fulfillment(pid, FulfillmentStatus.NO_DELIVERY, history_entry("NO_DELIVERY"))

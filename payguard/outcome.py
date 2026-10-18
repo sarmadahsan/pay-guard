@@ -56,9 +56,14 @@ def classify_outcome(repo: Any, row: Purchase, outcome: Outcome, from_state: Pay
     pid = row.purchase_id
     fields: dict[str, Any] = {}
     if outcome.kind == "response" and 200 <= (outcome.status or 0) < 300:
-        art = artifacts.store_artifact(outcome.content, outcome.content_type, pid, Path(artifact_dir))
-        repo.add_evidence(pid, EvidenceKind.ARTIFACT, art.evidence())
-        fields["artifact_hash"] = art.sha256
+        try:
+            art = artifacts.store_artifact(outcome.content, outcome.content_type, pid, Path(artifact_dir))
+            repo.add_evidence(pid, EvidenceKind.ARTIFACT, art.evidence())
+            fields["artifact_hash"] = art.sha256
+        except Exception as e:  # noqa: BLE001  # a hostile body or bad artifact dir must not hide a settlement
+            log.exception("artifact store failed for %s", pid)
+            repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"status": outcome.status, "via": via,
+                              "reason": "artifact store failed", "detail": f"{type(e).__name__}: {e}"})
         hdr = outcome.header(PAYMENT_RESPONSE_HEADER)
         settle = None
         if hdr:
@@ -71,9 +76,10 @@ def classify_outcome(repo: Any, row: Purchase, outcome: Outcome, from_state: Pay
             if settle is not None and settle.success:
                 repo.add_evidence(pid, EvidenceKind.SETTLEMENT, {"transaction": settle.transaction, "network": settle.network,
                                   "payer": settle.payer, "amount": settle.amount, "via": via})
-                repo.update_status(pid, from_state, PaymentStatus.SETTLED,
-                                   history_entry("SETTLED", via=via, tx=settle.transaction),
-                                   settlement_tx=settle.transaction, **fields)
+                if not repo.update_status(pid, from_state, PaymentStatus.SETTLED,
+                                          history_entry("SETTLED", via=via, tx=settle.transaction),
+                                          settlement_tx=settle.transaction, **fields):
+                    log.warning("compare-and-set lost for %s (SETTLED); leaving row as is", pid)
                 return repo.get_purchase(pid)
             if settle is not None:
                 repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"status": outcome.status, "via": via,
@@ -99,6 +105,7 @@ def classify_outcome(repo: Any, row: Purchase, outcome: Outcome, from_state: Pay
     else:
         repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"error": outcome.error, "via": via})
         reason = outcome.error or "transport error"
-    repo.update_status(pid, from_state, PaymentStatus.SETTLEMENT_UNKNOWN,
-                       history_entry("SETTLEMENT_UNKNOWN", via=via, reason=reason), **fields)
+    if not repo.update_status(pid, from_state, PaymentStatus.SETTLEMENT_UNKNOWN,
+                              history_entry("SETTLEMENT_UNKNOWN", via=via, reason=reason), **fields):
+        log.warning("compare-and-set lost for %s (SETTLEMENT_UNKNOWN); leaving row as is", pid)
     return repo.get_purchase(pid)

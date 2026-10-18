@@ -154,3 +154,65 @@ async def test_convert_without_pdf_validator_is_unverified_not_failed(deps, sell
 async def test_unknown_service(deps):
     r = await purchase(deps, "nope", {}, "i")
     assert "error" in r and r["safe_next_actions"] == ["human_review"]
+
+
+async def test_hostile_deep_json_body_still_settles_unverified(make_deps, monkeypatch):
+    seller = FakeSeller()
+    monkeypatch.setattr(seller, "body_for", lambda _r: (b"[" * 900 + b"]" * 900, "application/json"))
+    deps = make_deps(seller)
+    r = await purchase(deps, "report", {"ticker": "A"}, "i")
+    assert r["payment_status"] == "SETTLED" and r["settlement_tx"] == seller.tx
+    assert r["fulfillment_status"] == "UNVERIFIED" and len(seller.paid) == 1
+    assert "FULFILLMENT_UNVERIFIED" in codes(r) and "PAID_NO_DELIVERY" not in codes(r)
+
+
+async def test_unwritable_artifact_dir_still_settles_unverified(deps, seller, tmp_path):
+    f = tmp_path / "afile"
+    f.write_text("x")
+    deps.artifact_dir = f
+    r = await purchase(deps, "convert", {"doc_id": "d", "pages": 20}, "i")  # PDF body is written to disk
+    assert r["payment_status"] == "SETTLED" and r["settlement_tx"] == seller.tx
+    assert r["fulfillment_status"] == "UNVERIFIED" and len(seller.paid) == 1
+
+
+async def test_classification_error_never_leaves_row_sent(deps, seller, monkeypatch):
+    import payguard.purchase as pp
+
+    def boom(*_a, **_k):
+        raise RuntimeError("classifier bug")
+
+    monkeypatch.setattr(pp, "classify_outcome", boom)
+    r = await purchase(deps, "report", {"ticker": "A"}, "i")
+    assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and "seller_error" in kinds(deps, r["purchase_id"])
+
+
+@pytest.mark.parametrize("case", ["v2_body_no_header", "json_array", "json_null", "bad_header"])
+async def test_malformed_quote_rejected_not_stuck(make_deps, case):
+    import httpx
+    seller = FakeSeller()
+
+    def handler(request):
+        if case == "v2_body_no_header":
+            return httpx.Response(402, json={"x402Version": 2})
+        if case == "json_array":
+            return httpx.Response(200, json=[1, 2])
+        if case == "json_null":
+            return httpx.Response(200, content=b"null", headers={"content-type": "application/json"})
+        return httpx.Response(402, headers={"PAYMENT-REQUIRED": "!!!notbase64"}, json={"x402Version": 2})
+
+    seller.handler = handler
+    deps = make_deps(seller)
+    r = await purchase(deps, "report", {"ticker": "A"}, "i")
+    assert r["payment_status"] == "REJECTED" and r["reject_reason"] == "NOT_X402" and codes(r) == ["NOT_X402"]
+    assert seller.paid == [] and "payment_payload" not in kinds(deps, r["purchase_id"])
+
+
+@pytest.mark.parametrize("amount", ["0.5", "1e6", "-5", "", " 5", "1" * 31])
+async def test_non_digit_amount_is_price_mismatch(make_deps, amount):
+    seller = FakeSeller()
+    orig = seller._requirements
+    seller._requirements = lambda req: orig(req).model_copy(update={"amount": amount})
+    deps = make_deps(seller)
+    r = await purchase(deps, "report", {"ticker": "A"}, "i")
+    assert r["payment_status"] == "REJECTED" and r["reject_reason"] == "PRICE_MISMATCH" and seller.paid == []
+    assert r["findings"][0]["evidence_ids"]
