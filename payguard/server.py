@@ -97,16 +97,19 @@ def _format_usdc(minor: int) -> str:
     return f"{minor // 1_000_000}.{frac}"
 
 
-_bazaar = load_registry().get("bazaar")  # None when BAZAAR_URL is unset or BAZAAR_PRICE_MINOR is not a positive int
-if _bazaar is not None and (not _BAZAAR_NAME_OK.fullmatch(_bazaar.tool_name) or any(w in _bazaar.tool_name.lower() for w in _BAZAAR_NAME_BANNED)):
-    log.warning("bazaar tool not registered: unsafe BAZAAR_TOOL_NAME %r", _bazaar.tool_name)
-    _bazaar = None
-if _bazaar is not None:
-    _price = _format_usdc(_bazaar.accepted_price_minor)
+def _register_bazaar_tool() -> None:
+    """Called at the end of the module so the name check sees every other tool (FastMCP replaces duplicates)."""
+    bazaar = load_registry().get("bazaar")  # None when BAZAAR_URL is unset or BAZAAR_PRICE_MINOR is not a positive int
+    if bazaar is None:
+        return
+    name = bazaar.tool_name
+    if not _BAZAAR_NAME_OK.fullmatch(name) or any(w in name.lower() for w in _BAZAAR_NAME_BANNED) or name in globals():
+        log.warning("bazaar tool not registered: unsafe or already-used BAZAAR_TOOL_NAME %r", name)
+        return
 
-    @mcp.tool(name=_bazaar.tool_name,
-              description=f"Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar ({_bazaar.url_template}): "
-                          f"${_price} USDC. This seller has never heard of PayGuard. {REUSE}", app=UI)
+    @mcp.tool(name=name,
+              description=f"Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar ({bazaar.url_template}): "
+                          f"${_format_usdc(bazaar.accepted_price_minor)} USDC. This seller has never heard of PayGuard. {REUSE}", app=UI)
     async def get_public_data(purchase_intent_id: NonBlank, task_id: str | None = None) -> dict[str, Any]:
         return await purchase(get_deps(), "bazaar", {}, purchase_intent_id, task_id)
 
@@ -161,6 +164,8 @@ async def reconcile_purchase(purchase_id: str) -> dict[str, Any]:
 def purchases_view() -> str:
     return (Path(__file__).parent / "ui" / "purchases.html").read_text(encoding="utf-8")
 
+
+_register_bazaar_tool()  # last, after every other tool and module name exists
 
 if __name__ == "__main__":
     mcp.run()  # stdio

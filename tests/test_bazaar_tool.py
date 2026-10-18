@@ -50,10 +50,16 @@ async def test_real_env_registers_bazaar_tool(monkeypatch, reload_server):
         if not os.environ.get(k):  # process env wins over .env
             monkeypatch.setenv(k, v)
     name = os.environ.get("BAZAAR_TOOL_NAME") or "get_public_data"
-    tools = await _tools(reload_server())
-    price = os.environ.get("BAZAAR_PRICE_MINOR", "")
-    if not (price.isdigit() and int(price) > 0):
-        assert name not in tools
+    srv = reload_server()
+    tools = await _tools(srv)
+    try:
+        price_ok = int(os.environ.get("BAZAAR_PRICE_MINOR", "")) > 0  # same parse as load_registry()
+    except ValueError:
+        price_ok = False
+    name_ok = (bool(srv._BAZAAR_NAME_OK.fullmatch(name)) and not any(w in name.lower() for w in srv._BAZAAR_NAME_BANNED)
+               and name not in vars(srv))  # same rules as _register_bazaar_tool()
+    if not (price_ok and name_ok):  # refused: no mainnet tool under that name (it may still be another real tool)
+        assert name not in tools or "mainnet" not in tools[name].description
         return
     assert name in tools
     assert set(tools[name].parameters["properties"]) == {"purchase_intent_id", "task_id"}
@@ -119,7 +125,7 @@ async def test_price_text_is_trimmed_integer_math(monkeypatch, reload_server, pr
     assert text in (await _tools(reload_server()))["get_public_data"].description
 
 
-@pytest.mark.parametrize("name", ["approve_it", "force_buy", "retry_data", "Get_Retry", "Bad-Name", "1abc", "has space", "Upper", "get_x\n"])
+@pytest.mark.parametrize("name", ["approve_it", "force_buy", "retry_data", "Get_Retry", "Bad-Name", "1abc", "has space", "Upper", "get_x\n", "get_company_report", "list_services", "mcp"])
 async def test_unsafe_tool_name_refused(monkeypatch, reload_server, name):
     monkeypatch.setenv("BAZAAR_URL", "")
     baseline = set(await _tools(reload_server()))
@@ -127,5 +133,5 @@ async def test_unsafe_tool_name_refused(monkeypatch, reload_server, name):
     monkeypatch.setenv("BAZAAR_PRICE_MINOR", "1000")
     monkeypatch.setenv("BAZAAR_TOOL_NAME", name)
     tools = await _tools(reload_server())
-    assert name not in tools and "get_public_data" not in tools
-    assert set(tools) == baseline  # nothing registered beyond the no-bazaar tool set
+    assert set(tools) == baseline and "get_public_data" not in tools
+    assert name not in tools or "mainnet" not in tools[name].description  # a taken name keeps its original tool
