@@ -75,6 +75,7 @@ async def _poll(deps: Any, reader: Any, row: Purchase, pp: dict[str, Any], deadl
     if last is not None:
         deps.repo.add_evidence(row.purchase_id, EvidenceKind.CHAIN_CHECK, {
             "used": last.used, "event": last.event, "tx_hash": last.tx_hash, "transfer_ok": last.transfer_ok,
+            "search_complete": _search_complete(last),
             "block_number": last.block_number, "block_timestamp": last.block_timestamp, "polls": polls,
             "from": pp["from"], "nonce": pp["nonce"], "to": pp["to"], "value": pp["value"], "network": row.network})
         deps.repo.append_history(row.purchase_id, history_entry("chain_check", used=last.used, event=last.event,
@@ -123,12 +124,28 @@ def _consumed_unproven(repo: Any, row: Purchase, state: ChainState) -> Purchase:
     return repo.get_purchase(row.purchase_id)
 
 
+def _search_complete(state: Any) -> bool:
+    return bool(getattr(state, "search_complete", True))  # duck-typed readers (tests) may omit the field
+
+
+def _consumed_search_incomplete(repo: Any, row: Purchase, state: ChainState) -> Purchase:
+    """Nonce consumed but the log search ran out of call budget: no information. No resend (the nonce is
+    consumed) and no "unproven" finding; the row stays SETTLEMENT_UNKNOWN so reconcile_purchase stays offered."""
+    current = repo.get_purchase(row.purchase_id)
+    if current is None or current.payment_status != P.SETTLEMENT_UNKNOWN:
+        return current or row
+    repo.append_history(row.purchase_id, history_entry("nonce_consumed_search_incomplete", block=state.block_number))
+    return repo.get_purchase(row.purchase_id)
+
+
 def _decide_consumed(repo: Any, row: Purchase, state: ChainState) -> Purchase:
     if state.event == "used" and state.transfer_ok:
         return _settle_from_chain(repo, row, state)
     if state.event == "canceled":
         return _fail(repo, row, state, row.valid_before or 0,
                      f"authorization was canceled on-chain in {state.tx_hash}; no transfer can ever land")
+    if state.event is None and not _search_complete(state):
+        return _consumed_search_incomplete(repo, row, state)
     return _consumed_unproven(repo, row, state)
 
 
@@ -178,6 +195,8 @@ async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
     if row.payment_status == P.SETTLED:
         repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
         return row
+    if row.payment_status != P.SETTLEMENT_UNKNOWN:
+        return row  # another call moved the row; nothing left to poll for
 
     # exactly one more chain read, no further resend (Sugg. 1b)
     state = await _poll(deps, reader, row, pp, deadline, attempts=1)

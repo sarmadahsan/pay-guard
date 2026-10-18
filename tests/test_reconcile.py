@@ -285,10 +285,10 @@ def _addr_topic(a: str) -> HexBytes:
     return HexBytes(bytes(12) + bytes.fromhex(a[2:]))
 
 
-def auth_log(kind: str, block: int, tx: str = CHAIN_TX, nonce: str = NONCE) -> AttributeDict:
+def auth_log(kind: str, block: int, tx: str = CHAIN_TX, nonce: str = NONCE, who: str = BUYER) -> AttributeDict:
     topic0 = chain.TOPIC_USED if kind == "used" else chain.TOPIC_CANCELED
     return AttributeDict({"address": Web3.to_checksum_address(USDC[SEPOLIA]), "blockNumber": block,
-                          "transactionHash": _t(tx), "topics": [_t(topic0), _addr_topic(BUYER), _t(nonce)],
+                          "transactionHash": _t(tx), "topics": [_t(topic0), _addr_topic(who), _t(nonce)],
                           "data": HexBytes(b"")})
 
 
@@ -299,8 +299,9 @@ def transfer_log(frm: str, to: str, value: int, token: str = USDC[SEPOLIA]) -> A
 
 
 class FakeEth:
-    def __init__(self, used: bool, events=(), receipts=None):
+    def __init__(self, used: bool, events=(), receipts=None, log_delay_s: float = 0.0):
         self.used = used
+        self.log_delay_s = log_delay_s
         self.events = list(events)
         self.receipts = receipts or {}
         self.log_queries = []
@@ -312,6 +313,8 @@ class FakeEth:
 
     def get_logs(self, flt):
         self.log_queries.append(flt)
+        if self.log_delay_s:
+            time.sleep(self.log_delay_s)  # runs in the worker thread, like a slow RPC
         assert flt["toBlock"] - flt["fromBlock"] + 1 <= chain.LOG_WINDOW
         topic0s, who, nonce = flt["topics"]
         return [e for e in self.events
@@ -393,10 +396,17 @@ def test_chain_event_in_second_window(fake_w3):
 
 def test_chain_nothing_found_returns_unproven(fake_w3):
     eth = fake_w3(FakeEth(True, [auth_log("used", HEAD - 20, nonce="0x" + "ee" * 32)]))  # other nonce only
-    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None)
+    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None, True)
     assert len(eth.log_queries) == 3 and eth.log_queries[-1]["toBlock"] == HEAD  # windows cover exactly the range
     s = _read()
-    assert (s.used, s.event, s.tx_hash, s.transfer_ok) == (True, None, None, None)
+    assert (s.used, s.event, s.tx_hash, s.transfer_ok, s.search_complete) == (True, None, None, None, True)
+
+
+def test_chain_max_windows_exhausted_is_incomplete(fake_w3, monkeypatch):
+    monkeypatch.setattr(chain, "MAX_WINDOWS", 2)
+    eth = fake_w3(FakeEth(True))
+    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None, False)
+    assert len(eth.log_queries) == 2
 
 
 def test_chain_state_false_does_no_log_search(fake_w3):
@@ -408,7 +418,7 @@ def test_chain_state_false_does_no_log_search(fake_w3):
 def test_chain_log_search_stops_at_stop_time(fake_w3):
     eth = fake_w3(FakeEth(True, [auth_log("used", HEAD - 20)]))
     s = _read(stop_at=time.monotonic() - 1)
-    assert (s.used, s.event) == (True, None) and eth.log_queries == []
+    assert (s.used, s.event, s.search_complete) == (True, None, False) and eth.log_queries == []
 
 
 async def test_authorization_state_bounds_the_thread_by_the_call_deadline(fake_w3):
@@ -418,6 +428,96 @@ async def test_authorization_state_bounds_the_thread_by_the_call_deadline(fake_w
         s = await chain.authorization_state(SEPOLIA, BUYER, NONCE, PAYEE, 750_000, time.time() - 60)
     finally:
         chain.CALL_DEADLINE.reset(token)
-    assert s.event is None and eth.log_queries == []
+    assert (s.event, s.search_complete) == (None, False) and eth.log_queries == []
     s = await chain.authorization_state(SEPOLIA, BUYER, NONCE, PAYEE, 750_000, time.time() - 60)  # default budget
     assert (s.event, s.transfer_ok) == ("used", True)
+
+
+# ---- reconcile driving the real chain.authorization_state over a fake w3 -------------------------------------
+
+async def _unknown_row_with_real_reader(make_deps, fake_w3, eth_factory):
+    """A SETTLEMENT_UNKNOWN row (original send + one resend, chain says false), then switch deps to the real reader."""
+    seller = FakeSeller(mode="timeout")
+    deps = make_deps(seller, chain_reader=chain_seq(st(False, 1, int(time.time()))))
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert r["payment_status"] == "SETTLEMENT_UNKNOWN"
+    pp = next(e.payload for e in deps.repo.list_evidence(r["purchase_id"]) if e.kind == "payment_payload")
+    row = deps.repo.get_purchase(r["purchase_id"])
+    eth = fake_w3(eth_factory(pp, row))
+    deps.chain_reader = chain.authorization_state
+    return deps, seller, row, eth
+
+
+def _proven_eth(pp, row, **kw):
+    tx = "0x" + "ef" * 32
+    return FakeEth(True, [auth_log("used", HEAD - 5, tx=tx, nonce=pp["nonce"], who=pp["from"])],
+                   {tx: [transfer_log(pp["from"], row.pay_to, int(pp["value"]))]}, **kw)
+
+
+async def test_poll_passes_the_call_deadline_into_the_real_read(make_deps, fake_w3, monkeypatch):
+    deps, _seller, row, _eth = await _unknown_row_with_real_reader(make_deps, fake_w3, _proven_eth)
+    seen = []
+    real_read = chain._read
+
+    def spy(*a):
+        seen.append(a[-1])  # stop_at
+        return real_read(*a)
+
+    monkeypatch.setattr(chain, "_read", spy)
+    deadline = time.monotonic() + 5  # far below READ_BUDGET_S, so the call deadline must win
+    got = await reconcile(deps, row, deadline)
+    assert seen == [deadline]  # CALL_DEADLINE reached the worker thread's read
+    assert got.payment_status == "SETTLED" and got.settlement_tx == "0x" + "ef" * 32
+
+
+async def test_deadline_truncated_log_search_is_no_information(make_deps, fake_w3, monkeypatch):
+    from payguard.purchase import reconcile_and_finish
+    from payguard.response import build_response
+
+    monkeypatch.setattr(chain, "LOG_WINDOW", 30)  # range HEAD-60..HEAD -> 3 windows; the event is in the last one
+    monkeypatch.setattr(chain, "READ_BUDGET_S", 0.2)  # the thread's stop time passes during the first slow window
+    deps, seller, row, eth = await _unknown_row_with_real_reader(
+        make_deps, fake_w3, lambda pp, row: _proven_eth(pp, row, log_delay_s=0.3))
+    paid_before = len(seller.paid)
+    got = await reconcile_and_finish(deps, row, time.monotonic() + 10)
+    assert len(eth.log_queries) == 1  # stopped after the first window: the event was never looked at
+    assert got.payment_status == "SETTLEMENT_UNKNOWN" and len(seller.paid) == paid_before  # consumed nonce: no resend
+    assert "nonce_consumed_search_incomplete" in [h["state"] for h in got.history]
+    assert "nonce_consumed_unproven" not in [h["state"] for h in got.history]
+    open_f = [f for f in deps.repo.findings_for_purchase(row.purchase_id) if f.resolved_at is None]
+    assert [f.code for f in open_f] == ["SETTLEMENT_UNKNOWN"] and not any("Do not retry" in f.summary for f in open_f)
+    check = [e.payload for e in deps.repo.list_evidence(row.purchase_id) if e.kind == "chain_check"][-1]
+    assert check["used"] is True and check["search_complete"] is False
+    resp = build_response(deps, deps.repo.get_purchase(row.purchase_id))
+    assert "reconcile_purchase" in resp["safe_next_actions"]
+
+
+async def test_resend_that_settles_skips_the_post_resend_poll(make_deps):
+    seller = FakeSeller(mode="timeout")
+    seller.paid_modes = ["timeout", "ok"]
+    reader = chain_seq(st(False, 7, int(time.time())))
+    deps = make_deps(seller, chain_reader=reader)
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    assert r["payment_status"] == "SETTLED" and len(reader.calls) == 5  # no read after the settling resend
+
+
+async def test_row_moved_out_of_unknown_by_resend_classification_skips_the_post_resend_poll(make_deps, monkeypatch):
+    import payguard.reconcile as rc
+    from payguard.models import PaymentStatus, history_entry
+
+    seller = FakeSeller(mode="timeout")
+    reader = chain_seq(st(False, 1, int(time.time())))
+    deps = make_deps(seller, chain_reader=reader)
+    r = await purchase(deps, "research", {"topic": "x"}, "i1")
+    calls_before = len(reader.calls)
+
+    def concurrent_fail(repo, row, *_a, **_k):  # another call proved PAYMENT_FAILED meanwhile
+        repo.update_status(row.purchase_id, PaymentStatus.SETTLEMENT_UNKNOWN, PaymentStatus.PAYMENT_FAILED,
+                           history_entry("PAYMENT_FAILED", reason="concurrent"))
+        return repo.get_purchase(row.purchase_id)
+
+    monkeypatch.setattr(rc, "classify_outcome", concurrent_fail)
+    got = await reconcile(deps, deps.repo.get_purchase(r["purchase_id"]), time.monotonic() + 45)
+    assert got.payment_status == "PAYMENT_FAILED"
+    assert len(reader.calls) == calls_before + 5  # the 5 pre-resend polls only
+    assert hist(deps, r["purchase_id"])[-1] == "PAYMENT_FAILED"  # no still_unknown entry after it
