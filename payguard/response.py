@@ -20,7 +20,8 @@ from payguard.models import (
 EXPLORER = {"eip155:84532": "https://sepolia.basescan.org", "eip155:8453": "https://basescan.org"}
 
 
-def safe_next_actions(row: Purchase, findings: list[Finding]) -> list[str]:
+def safe_next_actions(row: Purchase, findings: list[Finding], dispute: dict[str, Any] | None = None) -> list[str]:
+    """`dispute` is dispute_state(...): a filed dispute adds check_dispute (reading the reply is free and safe)."""
     codes = {f.code for f in findings if f.resolved_at is None}
     if row.payment_status == PaymentStatus.REJECTED and row.reject_reason == RejectReason.SERVICE_QUARANTINED:
         acts = [NextAction.HUMAN_REVIEW]
@@ -39,6 +40,8 @@ def safe_next_actions(row: Purchase, findings: list[Finding]) -> list[str]:
         acts = [NextAction.HUMAN_REVIEW]
     else:
         acts = [NextAction.GET_PURCHASE]
+    if dispute and NextAction.CHECK_DISPUTE not in acts:
+        acts.append(NextAction.CHECK_DISPUTE)
     for a in acts:  # belt and braces: the vocabulary never contains pay/retry
         assert a.startswith(SAFE_NEXT_ACTION_PREFIXES), a
     return acts
@@ -112,14 +115,16 @@ def transaction_summary(row: Purchase, evidence: list[Any]) -> list[dict[str, An
 
 
 def dispute_state(evidence: list[Any]) -> dict[str, Any] | None:
-    """{dispute_id, to, sent_at, backend, status, reply_count} from DISPUTE / DISPUTE_REPLY evidence, or None."""
+    """{dispute_id, to, sent_at, backend, filed_by, status, reply_count} from DISPUTE / DISPUTE_REPLY evidence, or None.
+
+    filed_by is "policy" when auto_dispute filed it inside the purchase call, "agent" when the agent called file_dispute."""
     filed = [e for e in evidence if e.kind == EvidenceKind.DISPUTE]
     if not filed:
         return None
     d = filed[0].payload
     replies = [e for e in evidence if e.kind == EvidenceKind.DISPUTE_REPLY]
     return {"dispute_id": d.get("dispute_id"), "to": d.get("to"), "sent_at": d.get("sent_at"), "backend": d.get("backend"),
-            "status": "replied" if replies else "awaiting_reply", "reply_count": len(replies)}
+            "filed_by": d.get("filed_by", "agent"), "status": "replied" if replies else "awaiting_reply", "reply_count": len(replies)}
 
 
 def budget_summary(deps: Any) -> dict[str, Any]:
@@ -188,7 +193,7 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
         "verification": verification,
         "findings": [f.to_dict() for f in findings],
         "artifact": art.summary() if art else None,
-        "safe_next_actions": safe_next_actions(row, findings),
+        "safe_next_actions": safe_next_actions(row, findings, dispute),
         "transactions": tx,
         "delivery": delivery,
         "dispute": dispute,

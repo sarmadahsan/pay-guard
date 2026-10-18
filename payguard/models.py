@@ -109,6 +109,7 @@ class NextAction:
     HUMAN_REVIEW = "human_review"
     REPORT_TO_SELLER = "report_to_seller"
     USE_ARTIFACT = "use_artifact"
+    CHECK_DISPUTE = "check_dispute"  # a dispute is on record: read the seller's reply (Task 8.5/8.6); moves no money
 
     @staticmethod
     def wait_until(valid_before: int) -> str:
@@ -122,6 +123,7 @@ SAFE_NEXT_ACTION_PREFIXES = (
     NextAction.HUMAN_REVIEW,
     NextAction.REPORT_TO_SELLER,
     NextAction.USE_ARTIFACT,
+    NextAction.CHECK_DISPUTE,
 )
 
 

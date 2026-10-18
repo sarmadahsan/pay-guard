@@ -18,7 +18,7 @@ from x402.http.utils import (
 )
 from x402.schemas import PaymentRequired, PaymentRequirements
 
-from payguard import artifacts, audit, guard, reconcile, verify
+from payguard import artifacts, audit, disputes, guard, reconcile, verify
 from payguard.guard import IntentDecision
 from payguard.models import (
     EvidenceKind,
@@ -131,7 +131,19 @@ def _select_option(pr: PaymentRequired, service: Service) -> PaymentRequirements
 
 
 async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict[str, Any], deadline: float) -> Purchase:
-    """Design §3 steps 2–7 on an INTENT_RECORDED row. Also used by scripts/approve_retry.py (M8)."""
+    """Design §3 steps 2–7 on an INTENT_RECORDED row, then the terminal hook. Also used by scripts/approve_retry.py (M8)."""
+    row = await _run_from_quote(deps, row, service, args, deadline)
+    if row.payment_status == P.SETTLEMENT_UNKNOWN:
+        return await reconcile_and_finish(deps, row, deadline)
+    return await _finish(deps, row, deadline)
+
+
+async def _finish(deps: Deps, row: Purchase, deadline: float) -> Purchase:
+    """Runs once a row is terminal and its findings are written (Task 8.6). Changes no payment or fulfillment status."""
+    return await disputes.auto_dispute(deps, row, deadline)
+
+
+async def _run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict[str, Any], deadline: float) -> Purchase:
     repo = deps.repo
     pid = row.purchase_id
     method, url, body = service.build_request(args)
@@ -234,21 +246,22 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
                            history_entry("SETTLEMENT_UNKNOWN", via="send", reason="classification error"))
         row = repo.get_purchase(pid)
     if row.payment_status == P.SETTLEMENT_UNKNOWN:
-        return await reconcile_and_finish(deps, row, deadline)
+        return row  # run_from_quote reconciles it
     # ---- 7. verify
     return _verify(deps, row, service)
 
 
 async def reconcile_and_finish(deps: Deps, row: Purchase, deadline: float) -> Purchase:
-    """Reconcile a SETTLEMENT_UNKNOWN row (design §5), then finish: unknown finding, or step-7 verification."""
+    """Reconcile a SETTLEMENT_UNKNOWN row (design §5), then finish: unknown finding, or step-7 verification and the
+    terminal hook (auto_dispute). Called from purchase, reconcile_purchase and startup recovery."""
     row = await reconcile.reconcile(deps, row, deadline)
     if row.payment_status == P.SETTLEMENT_UNKNOWN:
         _ensure_unknown_finding(deps.repo, row)
         return row
     if row.payment_status == P.SETTLED:
         deps.repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
-        return _verify(deps, row, deps.registry[row.service_id])
-    return row
+        row = _verify(deps, row, deps.registry[row.service_id])
+    return await _finish(deps, row, deadline)
 
 
 def _ensure_unknown_finding(repo: Repository, row: Purchase) -> None:

@@ -60,3 +60,14 @@ def test_safe_next_actions_never_pays(status, fulfillment, codes):
         assert acts[:2] == ["human_review", "report_to_seller"]
     if FindingCode.SETTLEMENT_NOT_ON_CHAIN in codes and status != PaymentStatus.REJECTED:
         assert acts[:2] == ["human_review", "report_to_seller"]  # wallet audit (#87): a false receipt needs a human
+    assert "check_dispute" not in acts  # only once a dispute is on record (Task 8.5/8.6)
+    disputed = safe_next_actions(row, findings, {"dispute_id": "d", "status": "awaiting_reply", "reply_count": 0})
+    assert disputed[:-1] == acts and disputed[-1] == "check_dispute"
+    assert all(a.startswith(SAFE_NEXT_ACTION_PREFIXES) for a in disputed)
+
+
+def test_check_dispute_is_in_the_vocabulary_and_cannot_pay():
+    from payguard.models import NextAction
+
+    assert NextAction.CHECK_DISPUTE == "check_dispute" and NextAction.CHECK_DISPUTE in SAFE_NEXT_ACTION_PREFIXES
+    assert "check_dispute" in ADMIN_TOOLS  # the action names a tool that exists and is classified as unable to pay

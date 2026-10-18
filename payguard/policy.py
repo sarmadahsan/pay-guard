@@ -18,6 +18,9 @@ class Policy:
     per_purchase_cap_minor: int
     allowed_networks: tuple[str, ...]
     allowed_services: tuple[str, ...]
+    # Task 8.6: when true, a purchase that ends with a proven PAID_NO_DELIVERY / FULFILLMENT_FAILED / PRICE_MISMATCH
+    # finding has its dispute filed by PayGuard inside the same call. The protection is a policy, not a prompt.
+    auto_dispute: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -48,6 +51,13 @@ def _minor(data: dict[str, Any], name: str) -> int:
     return value
 
 
+def _flag(data: dict[str, Any], name: str, default: bool) -> bool:
+    value = data.get(name, default)
+    if type(value) is not bool:  # YAML 'yes'/'on' already parse to bool; a string or int is a typo, not a choice
+        raise ValueError(f"{name} must be true or false")
+    return value
+
+
 def load_policy(path: str | Path) -> Policy:
     data = yaml.load(Path(path).read_text(), Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
     if not isinstance(data, dict):
@@ -58,6 +68,7 @@ def load_policy(path: str | Path) -> Policy:
         per_purchase_cap_minor=_minor(data, "per_purchase_cap_minor"),
         allowed_networks=_str_list(data, "allowed_networks"),
         allowed_services=_str_list(data, "allowed_services"),
+        auto_dispute=_flag(data, "auto_dispute", False),
     )
 
 

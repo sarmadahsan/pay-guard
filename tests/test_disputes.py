@@ -198,7 +198,8 @@ async def test_file_dispute_dry_run_writes_file_records_evidence_and_is_once_onl
     assert out["purchase_id"] == pid and out["dispute_id"] == f"local-{pid}" and out["to"] == "support@seller.test"
     assert out["subject"].startswith("Dispute: convert") and len(out["body_preview"]) <= 400 and out["body_preview"]
     assert out["evidence_count"] >= 4 and out["explorer_url"].startswith("https://sepolia.basescan.org/tx/")
-    assert out["backend"] == "dry_run" and out["safe_next_actions"] == ["human_review"]
+    assert out["backend"] == "dry_run" and out["safe_next_actions"] == ["human_review", "check_dispute"]
+    assert out["filed_by"] == "agent"
 
     path = deps.artifact_dir / "disputes" / f"{pid}.txt"
     text = path.read_text()
@@ -292,9 +293,10 @@ async def test_check_dispute_records_a_reply_once(deps, seller, primitive):
     assert [f.code for f in deps.repo.findings_for_purchase(pid) if f.resolved_at is None] == ["FULFILLMENT_FAILED"]
     resp = build_response(deps, row)
     assert resp["dispute"] == {"dispute_id": "sent-123", "to": "support@seller.test", "sent_at": evidence[-2].payload["sent_at"],
-                               "backend": "primitive", "status": "replied", "reply_count": 1}
+                               "backend": "primitive", "filed_by": "agent", "status": "replied", "reply_count": 1}
     assert resp["headline"].endswith("· seller replied") and resp["risk"] == "red"
     assert "human_review" in resp["safe_next_actions"] and not any("pay" in a for a in resp["safe_next_actions"])
+    assert resp["safe_next_actions"][-1] == "check_dispute"
 
 
 async def test_check_dispute_dry_run_reads_a_dropped_reply_file(deps, seller, contact_env):
@@ -320,9 +322,10 @@ async def test_responses_show_the_dispute(deps, seller, contact_env):
     out = await file_dispute(deps, row.purchase_id, backend=DryRunBackend(deps.artifact_dir))
     full, compact = build_response(deps, row), compact_purchase(deps, row)
     expected = {"dispute_id": out["dispute_id"], "to": "support@seller.test", "sent_at": out["sent_at"], "backend": "dry_run",
-                "status": "awaiting_reply", "reply_count": 0}
+                "filed_by": "agent", "status": "awaiting_reply", "reply_count": 0}
     assert full["dispute"] == expected and compact["dispute"] == expected
     assert full["headline"].endswith("· dispute filed") and compact["headline"].endswith("· dispute filed")
+    assert full["safe_next_actions"] == ["human_review", "report_to_seller", "check_dispute"]
     assert full["findings"] and full["findings"][0]["resolved_at"] is None
 
 
@@ -370,3 +373,230 @@ def test_build_backend_from_env(monkeypatch, tmp_path):
 def test_dry_run_rejects_unsafe_purchase_ids(tmp_path):
     with pytest.raises(ValueError):
         DryRunBackend(tmp_path).path_for("../etc")
+
+
+# ---- auto_dispute (Task 8.6): the mandate files the dispute inside the purchase call ------------------------------
+
+def _auto(deps, on: bool = True):
+    from dataclasses import replace
+
+    deps.policy = replace(deps.policy, auto_dispute=on)
+    return deps
+
+
+def _disputes(deps, pid):
+    return [e for e in deps.repo.list_evidence(pid) if e.kind == EvidenceKind.DISPUTE]
+
+
+def _auto_failures(deps, pid):
+    from payguard.disputes import AUTO_FAILED
+
+    return [e for e in deps.repo.list_evidence(pid) if e.kind == EvidenceKind.SELLER_ERROR and e.payload.get("reason") == AUTO_FAILED]
+
+
+async def test_auto_dispute_files_in_call_for_a_failed_delivery(deps, seller, contact_env):
+    _auto(_with_contact(deps))
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")  # FULFILLMENT_FAILED (12 pages)
+    pid = r["purchase_id"]
+    assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "FAILED" and len(seller.paid) == 1
+    assert [f["code"] for f in r["findings"]] == ["FULFILLMENT_FAILED"] and r["findings"][0]["resolved_at"] is None
+
+    # the response of the purchase call itself already shows the dispute
+    assert r["dispute"]["filed_by"] == "policy" and r["dispute"]["status"] == "awaiting_reply"
+    assert r["dispute"]["dispute_id"] == f"local-{pid}" and r["dispute"]["backend"] == "dry_run" and r["dispute"]["to"] == "support@seller.test"
+    assert r["headline"].endswith("· dispute filed") and r["risk"] == "red"
+    assert r["safe_next_actions"] == ["human_review", "report_to_seller", "check_dispute"]
+    filed = [h for h in r["history"] if h["state"] == "DISPUTE_FILED"]
+    assert len(filed) == 1 and filed[0]["dispute_filed"] is True and filed[0]["filed_by"] == "policy"
+    assert r["history"][-1]["state"] == "DISPUTE_FILED"  # after FULFILLMENT_FAILED, inside the same call
+
+    (ev,) = _disputes(deps, pid)
+    assert ev.payload["filed_by"] == "policy" and ev.payload["finding_codes"] == ["FULFILLMENT_FAILED"]
+    text = (deps.artifact_dir / "disputes" / f"{pid}.txt").read_text()
+    assert "Subject: Dispute: convert" in text and "2.000000 USDC" in text and "PAYMENT-SIGNATURE" not in text
+    assert not _auto_failures(deps, pid)
+
+    # the agent's own file_dispute afterwards is a no-op that returns the policy's dispute
+    again = await file_dispute(deps, pid, backend=DryRunBackend(deps.artifact_dir))
+    assert again["already_filed"] is True and again["filed_by"] == "policy" and len(_disputes(deps, pid)) == 1
+
+
+async def test_auto_dispute_off_files_nothing(deps, seller, contact_env):
+    _auto(_with_contact(deps), on=False)
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    assert [f["code"] for f in r["findings"]] == ["FULFILLMENT_FAILED"]
+    assert r["dispute"] is None and not _disputes(deps, r["purchase_id"]) and not (deps.artifact_dir / "disputes").exists()
+    assert "dispute" not in r["headline"] and "check_dispute" not in r["safe_next_actions"]
+    assert not any(h["state"] == "DISPUTE_FILED" for h in r["history"])
+
+
+async def test_auto_dispute_leaves_a_verified_purchase_alone(deps, seller, contact_env):
+    _auto(_with_contact(deps))
+    r = await purchase(deps, "report", {"ticker": "ACME"}, "i-ok")
+    assert r["fulfillment_status"] == "VERIFIED" and r["findings"] == [] and r["risk"] == "green"
+    assert r["dispute"] is None and not _disputes(deps, r["purchase_id"]) and not (deps.artifact_dir / "disputes").exists()
+    assert not _auto_failures(deps, r["purchase_id"]) and r["safe_next_actions"] == ["use_artifact"]
+
+
+async def test_auto_dispute_files_for_a_blocked_overcharge(deps, seller, contact_env):
+    _auto(_with_contact(deps))
+    r = await purchase(deps, "report_premium", {"ticker": "ACME"}, "i-premium")  # quoted 0.75 > accepted 0.50
+    assert r["payment_status"] == "REJECTED" and r["reject_reason"] == "PRICE_MISMATCH" and seller.paid == []
+    assert r["dispute"]["filed_by"] == "policy" and r["headline"].endswith("· dispute filed")
+    assert r["safe_next_actions"] == ["get_purchase", "check_dispute"]  # a refusal: nothing paid, nothing to review
+    (ev,) = _disputes(deps, r["purchase_id"])
+    assert ev.payload["finding_codes"] == ["PRICE_MISMATCH"]
+    text = (deps.artifact_dir / "disputes" / f"{r['purchase_id']}.txt").read_text()
+    assert "(quoted 0.750000 USDC, refused)" in text and "no money moved" in text and "agreed price of 0.500000 USDC" in text
+    assert "None USDC" not in text and "refund" not in text.lower() and "Paid:" not in text
+
+
+async def test_auto_dispute_send_failure_never_changes_the_outcome(deps, seller, contact_env, monkeypatch):
+    import payguard.disputes as d
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"success": False, "error": {"code": "unauthorized", "message": "bad key"}})
+
+    bad = PrimitiveBackend("prim_bad", "a@b.test", base_url="https://api.primitive.test/v1", transport=httpx.MockTransport(boom))
+    monkeypatch.setattr(d, "build_backend", lambda *_a, **_k: bad)
+    _auto(_with_contact(deps))
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = r["purchase_id"]
+    assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "FAILED" and len(seller.paid) == 1
+    assert [f["code"] for f in r["findings"]] == ["FULFILLMENT_FAILED"] and r["risk"] == "red"
+    assert r["dispute"] is None and not _disputes(deps, pid) and "dispute" not in r["headline"]
+    assert r["safe_next_actions"] == ["human_review", "report_to_seller"]  # the agent can still file it
+    (err,) = _auto_failures(deps, pid)
+    assert err.payload["stage"] == "auto_dispute" and "HTTP 401" in err.payload["error"]
+    assert not any(h["state"] == "DISPUTE_FILED" for h in r["history"])
+    assert r["payment_status"] == deps.repo.get_purchase(pid).payment_status == "SETTLED"
+
+    # the explicit tool still works once the key is fixed: one dispute, one failure record
+    out = await file_dispute(deps, pid, backend=DryRunBackend(deps.artifact_dir))
+    assert out["filed_by"] == "agent" and len(_disputes(deps, pid)) == 1 and len(_auto_failures(deps, pid)) == 1
+
+
+async def test_auto_dispute_without_a_contact_records_the_failure_only(deps, seller):
+    _auto(deps)  # no SELLER_CONTACT_EMAIL, no well-known file
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    assert r["fulfillment_status"] == "FAILED" and r["dispute"] is None and not _disputes(deps, r["purchase_id"])
+    (err,) = _auto_failures(deps, r["purchase_id"])
+    assert "no contact address" in err.payload["error"]
+
+
+async def test_auto_dispute_second_call_on_the_same_purchase_files_nothing_new(deps, seller, contact_env):
+    _auto(_with_contact(deps))
+    first = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = first["purchase_id"]
+    assert len(_disputes(deps, pid)) == 1
+    second = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")  # same intent, same request
+    assert second["purchase_id"] == pid and len(seller.paid) == 1  # no second payment
+    assert {f["code"] for f in second["findings"]} == {"FULFILLMENT_FAILED", "DUPLICATE_SUSPECTED"}
+    assert len(_disputes(deps, pid)) == 1 and not _auto_failures(deps, pid)
+    assert [h["state"] for h in second["history"]].count("DISPUTE_FILED") == 1
+    assert len(list((deps.artifact_dir / "disputes").iterdir())) == 1
+    assert second["dispute"]["filed_by"] == "policy" and second["headline"].endswith("· dispute filed")
+    assert second["safe_next_actions"] == ["human_review", "report_to_seller", "check_dispute"]
+
+
+async def test_auto_dispute_covers_the_reconcile_path_for_paid_no_delivery(make_deps):
+    seller = FakeSeller(mode="false_failure")  # settled on-chain, HTTP 402 body: PAID_NO_DELIVERY via reconcile_and_finish
+    seller.support_email = "disputes@meridian.test"
+    deps = _auto(make_deps(seller, chain_reader=used_on_chain))
+    r = await purchase(deps, "intel", {"ticker": "NVDA"}, "demo-1")
+    assert [f["code"] for f in r["findings"]] == ["PAID_NO_DELIVERY"] and r["payment_status"] == "SETTLED"
+    assert r["dispute"]["filed_by"] == "policy" and r["dispute"]["to"] == "disputes@meridian.test"
+    assert r["headline"].endswith("· dispute filed") and r["history"][-1]["state"] == "DISPUTE_FILED"
+    (ev,) = _disputes(deps, r["purchase_id"])
+    assert ev.payload["contact_source"] == "well_known" and ev.payload["finding_codes"] == ["PAID_NO_DELIVERY"]
+
+
+async def test_auto_dispute_skips_and_records_when_the_call_budget_is_nearly_spent(deps, seller, contact_env, caplog):
+    import logging
+
+    from payguard.disputes import auto_dispute
+
+    _auto(_with_contact(deps), on=False)
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = r["purchase_id"]
+    _auto(deps)
+    row = deps.repo.get_purchase(pid)
+    with caplog.at_level(logging.WARNING, logger="payguard.disputes"):
+        same = await auto_dispute(deps, row, time.monotonic() + 2.0)  # < AUTO_MIN_REMAINING_S left
+    assert same.payment_status == row.payment_status == "SETTLED" and not _disputes(deps, pid)
+    (err,) = _auto_failures(deps, pid)  # a terminal row gets no later pass, so the skip is on the record
+    assert "skipped" in err.payload["error"] and "call budget" in err.payload["error"]
+    assert any("auto_dispute failed" in rec.message for rec in caplog.records)
+    resp = build_response(deps, same)
+    assert resp["dispute"] is None and resp["safe_next_actions"] == ["human_review", "report_to_seller"]
+    again = await auto_dispute(deps, same, time.monotonic() + 45.0)  # one automatic attempt per purchase
+    assert not _disputes(deps, pid) and len(_auto_failures(deps, pid)) == 1 and again.payment_status == "SETTLED"
+    out = await file_dispute(deps, pid, backend=DryRunBackend(deps.artifact_dir))  # the agent still can
+    assert out["filed_by"] == "agent" and len(_disputes(deps, pid)) == 1
+
+
+async def test_file_for_purchase_is_serialized_per_purchase(deps, seller, contact_env):
+    import asyncio
+
+    from payguard.disputes import file_for_purchase
+
+    _with_contact(deps)
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = r["purchase_id"]
+
+    class SlowDryRun(DryRunBackend):
+        sends = 0
+
+        async def send_mail(self, **kw):
+            SlowDryRun.sends += 1
+            await asyncio.sleep(0.05)  # both callers would pass the check-then-act window without the lock
+            return await super().send_mail(**kw)
+
+    backend = SlowDryRun(deps.artifact_dir)
+    a, b = await asyncio.gather(file_for_purchase(deps, pid, backend, filed_by="policy"),
+                                file_for_purchase(deps, pid, backend, filed_by="agent"))
+    assert SlowDryRun.sends == 1 and len(_disputes(deps, pid)) == 1
+    assert {a.get("already_filed"), b.get("already_filed")} == {None, True}
+    assert a["dispute_id"] == b["dispute_id"] and a["filed_by"] == b["filed_by"] == "policy"
+    assert [h["state"] for h in deps.repo.get_purchase(pid).history].count("DISPUTE_FILED") == 1
+
+
+async def test_auto_dispute_hooks_overlapping_on_one_purchase_send_once(deps, seller, contact_env):
+    import asyncio
+
+    from payguard.disputes import auto_dispute
+
+    _auto(_with_contact(deps), on=False)
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = r["purchase_id"]
+    _auto(deps)
+    row = deps.repo.get_purchase(pid)
+
+    class SlowDryRun(DryRunBackend):
+        sends = 0
+
+        async def send_mail(self, **kw):
+            SlowDryRun.sends += 1
+            await asyncio.sleep(0.05)
+            return await super().send_mail(**kw)
+
+    backend = SlowDryRun(deps.artifact_dir)
+    deadline = time.monotonic() + 45.0
+    await asyncio.gather(auto_dispute(deps, row, deadline, backend), auto_dispute(deps, row, deadline, backend))
+    assert SlowDryRun.sends == 1 and len(_disputes(deps, pid)) == 1 and not _auto_failures(deps, pid)
+
+
+def test_render_email_for_a_refused_overcharge_claims_no_payment():
+    bundle = {"purchase": {"purchase_id": "p1", "service_id": "report_premium", "attempt": 1, "args": {"ticker": "ACME"},
+                           "payment_status": "REJECTED", "fulfillment_status": "PENDING", "paid": False,
+                           "authorized_amount_minor": None, "amount_usdc": None, "quoted_amount_minor": 750_000,
+                           "quoted_usdc": "0.750000", "settlement_tx": None, "buyer_address": None},
+              "seller": {"pay_to": "0xseller", "network": "eip155:84532", "accepted_price_minor": 500_000,
+                         "accepted_price_usdc": "0.500000", "contact_email": "s@x.test"},
+              "findings": [{"code": "PRICE_MISMATCH", "severity": "proven", "summary": "quoted 750000 minor exceeds accepted 500000"}],
+              "evidence": [], "explorer_url": None}
+    subject, body = render_email(bundle)
+    assert subject == "Dispute: report_premium purchase p1 (quoted 0.750000 USDC, refused)"
+    assert "None" not in subject and "None" not in body and "refund" not in body.lower() and "Paid:" not in body
+    assert "Quoted: 0.750000 USDC against an agreed price of 0.500000 USDC" in body and "no money moved" in body
+    assert "quote the agreed price for this service (the agreed price is 0.500000 USDC); no payment was made" in body
