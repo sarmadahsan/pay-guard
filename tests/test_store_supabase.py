@@ -253,3 +253,26 @@ def test_from_env_names_missing_variable(monkeypatch):
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     with pytest.raises(RuntimeError, match="SUPABASE_SERVICE_KEY"):
         SupabaseRepository.from_env()
+
+
+def test_postgrest_wire_format_of_queries_we_rely_on():
+    """Builds real supabase-py queries (no .execute(), so no network) mirroring the repository's calls."""
+    from urllib.parse import unquote
+
+    from supabase import create_client
+
+    from payguard.store.supabase import FINDING_JOIN, PURCHASE_KEY
+
+    client = create_client("https://x.invalid", "k")
+    up = client.table("purchases").upsert({"purchase_id": "p1"}, on_conflict=PURCHASE_KEY, ignore_duplicates=True).request
+    assert up.params["on_conflict"] == "principal_id,purchase_intent_id,request_fingerprint,attempt"
+    prefer = up.headers["prefer"]
+    assert "resolution=ignore-duplicates" in prefer and "return=representation" in prefer
+
+    t = time.time()
+    upd = client.table("purchases").update({"x": 1}).eq("purchase_id", "p1").eq("updated_at", t).request
+    assert upd.params["updated_at"] == f"eq.{t!r}" and float(upd.params["updated_at"][3:]) == t
+
+    sel = client.table("findings").select(FINDING_JOIN).eq("purchases.principal_id", "p").request
+    assert unquote(sel.params["select"]).startswith("*,purchases!inner(principal_id,service_id,")
+    assert sel.params["purchases.principal_id"] == "eq.p"

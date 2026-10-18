@@ -19,6 +19,8 @@ import json
 import logging
 import math
 import os
+import random
+import time
 from typing import Any, Callable
 
 from postgrest.exceptions import APIError
@@ -50,6 +52,7 @@ INT_COLS = ("attempt", "quoted_amount_minor", "authorized_amount_minor", "valid_
 PURCHASE_FIELDS = tuple(Purchase.__dataclass_fields__)
 UNIQUE_VIOLATION = "23505"  # Postgres SQLSTATE
 HISTORY_WRITE_ATTEMPTS = 5
+RETRY_JITTER_S = (0.01, 0.05)  # per attempt; desynchronises two processes retrying together
 PAGE_SIZE = 1000  # Supabase's default max-rows; _select_all also copes with a lower server cap
 ID_CHUNK = 100  # ids per `in.(...)` filter, keeps request URLs short
 FINDING_JOIN = (
@@ -198,6 +201,8 @@ class SupabaseRepository:
             if len(q.execute().data or []) == 1:
                 return True
             log.info("history write on %s raced a concurrent writer (attempt %d); retrying", purchase_id, attempt)
+            if attempt < HISTORY_WRITE_ATTEMPTS:
+                time.sleep(random.uniform(*RETRY_JITTER_S) * attempt)
         raise RuntimeError(
             f"could not write history for purchase {purchase_id}: row kept changing "
             f"({HISTORY_WRITE_ATTEMPTS} attempts)"

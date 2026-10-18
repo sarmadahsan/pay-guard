@@ -64,3 +64,6 @@ create index if not exists idx_findings_purchase on findings (purchase_id);
 alter table purchases enable row level security;
 alter table evidence enable row level security;
 alter table findings enable row level security;
+
+-- Newer projects may not grant table privileges to service_role by default. GRANT is idempotent.
+grant select, insert, update, delete on purchases, evidence, findings to service_role;
