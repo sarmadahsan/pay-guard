@@ -119,11 +119,13 @@ async def test_price_text_is_trimmed_integer_math(monkeypatch, reload_server, pr
     assert text in (await _tools(reload_server()))["get_public_data"].description
 
 
-@pytest.mark.parametrize("name", ["approve_it", "force_buy", "retry_data", "Get_Retry", "Bad-Name", "1abc", "has space", "Upper"])
+@pytest.mark.parametrize("name", ["approve_it", "force_buy", "retry_data", "Get_Retry", "Bad-Name", "1abc", "has space", "Upper", "get_x\n"])
 async def test_unsafe_tool_name_refused(monkeypatch, reload_server, name):
+    monkeypatch.setenv("BAZAAR_URL", "")
+    baseline = set(await _tools(reload_server()))
     monkeypatch.setenv("BAZAAR_URL", TEST_URL)
     monkeypatch.setenv("BAZAAR_PRICE_MINOR", "1000")
     monkeypatch.setenv("BAZAAR_TOOL_NAME", name)
     tools = await _tools(reload_server())
     assert name not in tools and "get_public_data" not in tools
-    assert len(tools) == 9  # 3 paid + 6 admin, nothing extra
+    assert set(tools) == baseline  # nothing registered beyond the no-bazaar tool set

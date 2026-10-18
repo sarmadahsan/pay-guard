@@ -87,7 +87,7 @@ async def convert_document(doc_id: NonBlank, pages: Annotated[int, Field(ge=1)],
 
 
 # ---- fourth paid tool: a public Bazaar seller on Base mainnet (design §4, §8.7). Exists iff the registry has a `bazaar` service. ----
-_BAZAAR_NAME_OK = re.compile(r"^[a-z][a-z0-9_]*$")
+_BAZAAR_NAME_OK = re.compile(r"[a-z][a-z0-9_]*")  # used with fullmatch: `$` would accept a trailing newline
 _BAZAAR_NAME_BANNED = ("approve", "force", "retry")  # never let an env value name a tool like an escape hatch
 
 
@@ -98,7 +98,7 @@ def _format_usdc(minor: int) -> str:
 
 
 _bazaar = load_registry().get("bazaar")  # None when BAZAAR_URL is unset or BAZAAR_PRICE_MINOR is not a positive int
-if _bazaar is not None and (not _BAZAAR_NAME_OK.match(_bazaar.tool_name) or any(w in _bazaar.tool_name.lower() for w in _BAZAAR_NAME_BANNED)):
+if _bazaar is not None and (not _BAZAAR_NAME_OK.fullmatch(_bazaar.tool_name) or any(w in _bazaar.tool_name.lower() for w in _BAZAAR_NAME_BANNED)):
     log.warning("bazaar tool not registered: unsafe BAZAAR_TOOL_NAME %r", _bazaar.tool_name)
     _bazaar = None
 if _bazaar is not None:
