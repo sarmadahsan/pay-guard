@@ -58,3 +58,28 @@ def test_unknown_validator_raises(reg):
     svc = replace(reg["report"], validators=("does_not_exist",))
     with pytest.raises(KeyError):
         run_validators(svc, {}, json_art({}))
+
+
+@pytest.mark.parametrize("body", [b"[" * 100000 + b"]" * 100000, b'{"a":' + b"9" * 5000 + b"}"])
+def test_hostile_json_falls_back_to_bytes(tmp_path, body):
+    art = store_artifact(body, "application/json", "p9", tmp_path)
+    assert art.kind == "bytes" and art.path
+
+
+def test_list_body_does_not_abort_validators(reg):
+    art = json_art([1, 2])
+    results = dict((r[0], r) for r in run_validators(reg["report"], {"ticker": "ACME"}, art))
+    assert results["ticker_matches"][1] is False and results["json_schema:company_report"][1] is False
+
+
+def test_none_ticker_does_not_match_none_string(reg):
+    art = json_art({"ticker": "None", "name": "x", "revenue_usd": 1, "fiscal_year": 2025})
+    results = dict((r[0], r) for r in run_validators(reg["report"], {"ticker": None}, art))
+    assert results["ticker_matches"][1] is False
+
+
+def test_content_type_requires_equality(reg):
+    art = json_art({"a": 1})
+    art.content_type = "application/jsonx"
+    results = dict((r[0], r) for r in run_validators(reg["report"], {"ticker": "ACME"}, art))
+    assert results["content_type"][1] is False

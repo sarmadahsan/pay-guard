@@ -49,7 +49,7 @@ def store_artifact(body: bytes, content_type: str, purchase_id: str, root: Path)
     if ct == "application/json" or ct.endswith("+json"):
         try:
             return Artifact("json", ct, sha, len(body), json=json.loads(body))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (ValueError, RecursionError):
             pass
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
