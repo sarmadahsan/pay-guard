@@ -164,3 +164,10 @@ async def test_convert_flow_fulfillment_failed_with_evidence(deps, seller):
     assert {kinds[i] for i in f[0]["evidence_ids"]} == {"validator", "artifact"}
     assert r["safe_next_actions"] == ["human_review", "report_to_seller"]
     assert len(seller.paid) == 1 and deps.repo.spent_minor("test") == 2_000_000
+
+
+async def test_convert_flow_without_pages_is_unverified_not_failed(deps, seller):
+    r = await purchase(deps, "convert", {"doc_id": "d1"}, "i-convert-nopages")
+    assert r["payment_status"] == "SETTLED" and r["fulfillment_status"] == "UNVERIFIED"
+    codes = [x["code"] for x in r["findings"]]
+    assert "FULFILLMENT_UNVERIFIED" in codes and "FULFILLMENT_FAILED" not in codes
