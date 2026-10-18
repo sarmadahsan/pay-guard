@@ -76,8 +76,11 @@ def _delivery_text(delivery: dict[str, Any]) -> str:
 
 
 def headline(*, payment_status: str, service_id: str, args: dict[str, Any] | None, delivery: dict[str, Any],
-             transactions: list[dict[str, Any]], findings: list[Any], reject_reason: str | None = None) -> str:
-    """One line such as '🟢 Paid 0.500000 USDC · report ACME · verified 4/4 · tx 0x17a2…3931e'."""
+             transactions: list[dict[str, Any]], findings: list[Any], reject_reason: str | None = None,
+             dispute: dict[str, Any] | None = None) -> str:
+    """One line such as '🟢 Paid 0.500000 USDC · report ACME · verified 4/4 · tx 0x17a2…3931e'.
+
+    `dispute` is response.dispute_state(...): it appends '· dispute filed' or '· seller replied'."""
     level = risk(payment_status, delivery, transactions, findings)
     what = " ".join(p for p in (service_id, subject(args)) if p)
     tx = transactions[0] if transactions else {}
@@ -99,4 +102,6 @@ def headline(*, payment_status: str, service_id: str, args: dict[str, Any] | Non
         parts = ["Abandoned", what, "nothing spent"]
     else:
         parts = [payment_status, what]
+    if dispute:
+        parts.append("seller replied" if dispute.get("status") == "replied" else "dispute filed")
     return f"{EMOJI[level]} " + " · ".join(p for p in parts if p)

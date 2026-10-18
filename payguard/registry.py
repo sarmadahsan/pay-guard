@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 from urllib.parse import quote
 
@@ -28,6 +28,7 @@ class Service:
     expected_content_type: str
     validators: tuple[str, ...]
     timeout_s: float
+    contact_email: str | None = None  # dispute fallback when the seller publishes no /.well-known/x402-seller.json
 
     def build_request(self, args: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
         if args and "{" in self.url_template:
@@ -81,4 +82,10 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
                 price, os.environ.get("BAZAAR_CONTENT_TYPE", "application/json"),
                 ("non_empty", "content_hash"), 40.0,
             ))
+    contact = (os.environ.get("SELLER_CONTACT_EMAIL") or "").strip() or None
+    if contact:
+        # Only sellers the operator runs (the :8402 demo sellers and Meridian). A public Bazaar seller must publish its
+        # own /.well-known/x402-seller.json: the demo inbox is not its support address, and a dispute sent there would
+        # be the one dispute the purchase is allowed.
+        services = [replace(s, contact_email=contact) if s.id != "bazaar" else s for s in services]
     return {s.id: s for s in services}

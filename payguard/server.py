@@ -24,7 +24,7 @@ from fastmcp import FastMCP  # noqa: E402
 from fastmcp.apps.config import AppConfig  # noqa: E402
 from pydantic import Field  # noqa: E402
 
-from payguard import audit, recovery  # noqa: E402
+from payguard import audit, disputes, recovery  # noqa: E402
 from payguard.deps import get_deps  # noqa: E402
 from payguard.models import PaymentStatus  # noqa: E402
 from payguard.purchase import CALL_BUDGET_S, purchase, reconcile_and_finish  # noqa: E402
@@ -173,6 +173,19 @@ async def reconcile_purchase(purchase_id: str) -> dict[str, Any]:
     if row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:
         row = await reconcile_and_finish(deps, row, time.monotonic() + CALL_BUDGET_S)
     return build_response(deps, row)
+
+
+@mcp.tool(description="File a dispute with the seller for a purchase that has an unresolved proven finding (paid but nothing "
+                      "delivered, delivery failed checks, or overcharged): emails the seller's agent from PayGuard's own inbox "
+                      "with the redacted evidence attached and records the thread. One dispute per purchase; moves no money.", app=UI)
+async def file_dispute(purchase_id: NonBlank) -> dict[str, Any]:
+    return await disputes.file_dispute(get_deps(), purchase_id.strip())
+
+
+@mcp.tool(description="Check whether the seller replied to a filed dispute. Records any reply as evidence and surfaces it for a "
+                      "human; never resolves the finding or pays anything.", app=UI)
+async def check_dispute(purchase_id: NonBlank) -> dict[str, Any]:
+    return await disputes.check_dispute(get_deps(), purchase_id.strip())
 
 
 @mcp.resource(PURCHASES_UI, name="PayGuard purchases", description="Risk-coded view of PayGuard purchase results. Read-only.")

@@ -15,7 +15,8 @@ from payguard.models import (
 from payguard.response import safe_next_actions
 
 PAID_TOOLS = ("get_company_report", "get_research_report", "convert_document")
-ADMIN_TOOLS = ("list_services", "get_spending_policy", "get_purchase", "list_findings", "list_purchases", "reconcile_purchase")
+ADMIN_TOOLS = ("list_services", "get_spending_policy", "get_purchase", "list_findings", "list_purchases", "reconcile_purchase",
+               "file_dispute", "check_dispute")  # disputes email the seller; they cannot pay
 
 
 async def test_mcp_schema_has_no_force_retry_and_no_approve_retry():

@@ -61,6 +61,7 @@ class FakeSeller:
         self.paid: list[httpx.Request] = []
         self.paid_modes: list[str] = []  # optional per-paid-request override queue, consumed left to right (M5 resend tests)
         self.on_unpaid: Any = None  # optional callback(request) before answering the unpaid request (CAS tests)
+        self.support_email: str | None = None  # served at /.well-known/x402-seller.json when set (Meridian publishes one)
 
     def price_for(self, path: str) -> int:
         if self.price_override is not None:
@@ -94,6 +95,11 @@ class FakeSeller:
         return b'{"ok": true}', "application/json"
 
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/.well-known/x402-seller.json":
+            if self.support_email is None:
+                return httpx.Response(404, json={"error": "not found"})
+            return httpx.Response(200, json={"name": "Fake Seller", "support_email": self.support_email,
+                                             "support_phone": "+15555550100", "network": self.network, "pay_to": PAY_TO})
         if self.mode == "plain200":
             return httpx.Response(200, json={"free": True})
         if self.mode == "v1":
