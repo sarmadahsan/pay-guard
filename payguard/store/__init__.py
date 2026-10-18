@@ -19,7 +19,12 @@ def open_repository(root: Path | None = None) -> Repository:
             path = str(root / path)
         return SqliteRepository(path)
     if kind == "supabase":
-        from payguard.store.supabase import SupabaseRepository  # M6
+        try:
+            from payguard.store.supabase import SupabaseRepository  # M6
+        except ModuleNotFoundError as e:
+            if e.name != "payguard.store.supabase":
+                raise  # a missing dependency of the backend, not the backend itself
+            raise NotImplementedError("PAYGUARD_STORE=supabase: the Supabase backend is not available yet (M6)") from e
 
         return SupabaseRepository.from_env()
     raise ValueError(f"unknown PAYGUARD_STORE={kind!r} (expected sqlite|supabase)")

@@ -161,3 +161,11 @@ def test_reset_leaves_other_principal(repo):
     assert repo.get_purchase(other.purchase_id) is not None
     assert len(repo.list_evidence(other.purchase_id)) == 1
     assert len(repo.findings_for_purchase(other.purchase_id)) == 1
+
+
+def test_open_repository_supabase_not_available_yet(monkeypatch):
+    from payguard.store import open_repository
+
+    monkeypatch.setenv("PAYGUARD_STORE", "supabase")
+    with pytest.raises(NotImplementedError, match="Supabase backend is not available yet"):
+        open_repository()
