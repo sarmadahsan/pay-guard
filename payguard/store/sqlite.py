@@ -1,0 +1,290 @@
+"""SQLite repository (build-night default). WAL mode + busy_timeout 5000 ms (review S7)."""
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Any
+
+from payguard.models import (
+    BUDGET_STATES,
+    IN_FLIGHT,
+    Evidence,
+    Finding,
+    FulfillmentStatus,
+    PaymentStatus,
+    Purchase,
+    assert_transition,
+    new_id,
+    now,
+)
+from payguard.store.base import DuplicateKeyError
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS purchases (
+  purchase_id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL,
+  task_id TEXT,
+  purchase_intent_id TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  supersedes_purchase_id TEXT,
+  approved_by TEXT,
+  service_id TEXT NOT NULL,
+  args TEXT NOT NULL,
+  quoted_amount_minor INTEGER,
+  authorized_amount_minor INTEGER,
+  asset TEXT,
+  network TEXT NOT NULL,
+  pay_to TEXT,
+  payment_status TEXT NOT NULL,
+  fulfillment_status TEXT NOT NULL,
+  settlement_tx TEXT,
+  valid_before INTEGER,
+  artifact_hash TEXT,
+  reject_reason TEXT,
+  history TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  UNIQUE (principal_id, purchase_intent_id, request_fingerprint, attempt)
+);
+CREATE INDEX IF NOT EXISTS idx_purchases_fp ON purchases (principal_id, request_fingerprint, created_at);
+CREATE TABLE IF NOT EXISTS evidence (
+  evidence_id TEXT PRIMARY KEY,
+  purchase_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_purchase ON evidence (purchase_id, created_at);
+CREATE TABLE IF NOT EXISTS findings (
+  finding_id TEXT PRIMARY KEY,
+  purchase_id TEXT NOT NULL,
+  code TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  evidence_ids TEXT NOT NULL,
+  safe_next_actions TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  resolved_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_findings_purchase ON findings (purchase_id);
+"""
+
+PURCHASE_COLS = (
+    "purchase_id", "principal_id", "task_id", "purchase_intent_id", "request_fingerprint", "attempt",
+    "supersedes_purchase_id", "approved_by", "service_id", "args", "quoted_amount_minor",
+    "authorized_amount_minor", "asset", "network", "pay_to", "payment_status", "fulfillment_status",
+    "settlement_tx", "valid_before", "artifact_hash", "reject_reason", "history", "created_at", "updated_at",
+)
+JSON_COLS = {"args", "history"}
+PROTECTED_COLS = {"purchase_id", "payment_status", "history", "principal_id"}
+
+
+def _enc(col: str, v: Any) -> Any:
+    if col in JSON_COLS or isinstance(v, (dict, list)):
+        return json.dumps(v)
+    if isinstance(v, (PaymentStatus, FulfillmentStatus)):
+        return str(v)
+    return v
+
+
+def _row(r: sqlite3.Row) -> Purchase:
+    d = {k: r[k] for k in PURCHASE_COLS}
+    d["args"] = json.loads(d["args"])
+    d["history"] = json.loads(d["history"])
+    d["payment_status"] = PaymentStatus(d["payment_status"])
+    d["fulfillment_status"] = FulfillmentStatus(d["fulfillment_status"])
+    return Purchase(**d)
+
+
+def _finding(r: sqlite3.Row) -> Finding:
+    return Finding(
+        finding_id=r["finding_id"], purchase_id=r["purchase_id"], code=r["code"], severity=r["severity"],
+        summary=r["summary"], evidence_ids=json.loads(r["evidence_ids"]),
+        safe_next_actions=json.loads(r["safe_next_actions"]), created_at=r["created_at"], resolved_at=r["resolved_at"],
+    )
+
+
+class SqliteRepository:
+    def __init__(self, path: str | Path) -> None:
+        self.path = str(path)
+        # isolation_level=None -> autocommit; every UPDATE is its own atomic transaction.
+        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
+        self.conn.executescript(SCHEMA)
+
+    # ---- purchases -------------------------------------------------------
+    def create_purchase(self, row: Purchase) -> Purchase:
+        d = row.to_dict()
+        cols = ", ".join(PURCHASE_COLS)
+        marks = ", ".join("?" for _ in PURCHASE_COLS)
+        try:
+            self.conn.execute(f"INSERT INTO purchases ({cols}) VALUES ({marks})",
+                              [_enc(c, d[c]) for c in PURCHASE_COLS])
+        except sqlite3.IntegrityError as e:
+            raise DuplicateKeyError(str(e)) from e
+        return self.get_purchase(row.purchase_id)  # type: ignore[return-value]
+
+    def get_purchase(self, purchase_id: str) -> Purchase | None:
+        r = self.conn.execute("SELECT * FROM purchases WHERE purchase_id = ?", (purchase_id,)).fetchone()
+        return _row(r) if r else None
+
+    def find_by_key(self, principal_id: str, purchase_intent_id: str, request_fingerprint: str) -> list[Purchase]:
+        rows = self.conn.execute(
+            "SELECT * FROM purchases WHERE principal_id = ? AND purchase_intent_id = ? AND request_fingerprint = ? ORDER BY attempt",
+            (principal_id, purchase_intent_id, request_fingerprint),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+    def find_recent_by_fingerprint(self, principal_id: str, request_fingerprint: str, since_ts: float) -> list[Purchase]:
+        rows = self.conn.execute(
+            "SELECT * FROM purchases WHERE principal_id = ? AND request_fingerprint = ? AND created_at >= ? ORDER BY created_at DESC",
+            (principal_id, request_fingerprint, since_ts),
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+    def update_status(self, purchase_id: str, expected: PaymentStatus, new: PaymentStatus,
+                      history_entry: dict[str, Any] | None = None, **fields: Any) -> bool:
+        expected, new = PaymentStatus(expected), PaymentStatus(new)
+        assert_transition(expected, new)
+        bad = [k for k in fields if k not in PURCHASE_COLS or k in PROTECTED_COLS]
+        if bad:
+            raise ValueError(f"cannot set columns {bad} through update_status")
+        sets = ["payment_status = ?", "updated_at = ?"]
+        params: list[Any] = [str(new), now()]
+        if history_entry is not None:
+            sets.append("history = json_insert(history, '$[#]', json(?))")
+            params.append(json.dumps(history_entry))
+        for k, v in fields.items():
+            sets.append(f"{k} = ?")
+            params.append(_enc(k, v))
+        params += [purchase_id, str(expected)]
+        cur = self.conn.execute(
+            f"UPDATE purchases SET {', '.join(sets)} WHERE purchase_id = ? AND payment_status = ?", params
+        )
+        return cur.rowcount == 1
+
+    def set_fulfillment(self, purchase_id: str, status: FulfillmentStatus,
+                        history_entry: dict[str, Any] | None = None, **fields: Any) -> None:
+        bad = [k for k in fields if k not in PURCHASE_COLS or k in PROTECTED_COLS or k == "fulfillment_status"]
+        if bad:
+            raise ValueError(f"cannot set columns {bad} through set_fulfillment")
+        sets = ["fulfillment_status = ?", "updated_at = ?"]
+        params: list[Any] = [str(FulfillmentStatus(status)), now()]
+        if history_entry is not None:
+            sets.append("history = json_insert(history, '$[#]', json(?))")
+            params.append(json.dumps(history_entry))
+        for k, v in fields.items():
+            sets.append(f"{k} = ?")
+            params.append(_enc(k, v))
+        params.append(purchase_id)
+        self.conn.execute(f"UPDATE purchases SET {', '.join(sets)} WHERE purchase_id = ?", params)
+
+    def append_history(self, purchase_id: str, entry: dict[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE purchases SET history = json_insert(history, '$[#]', json(?)), updated_at = ? WHERE purchase_id = ?",
+            (json.dumps(entry), now(), purchase_id),
+        )
+
+    def list_stuck(self, older_than_s: float) -> list[Purchase]:
+        marks = ", ".join("?" for _ in IN_FLIGHT)
+        rows = self.conn.execute(
+            f"SELECT * FROM purchases WHERE payment_status IN ({marks}) AND updated_at < ? ORDER BY updated_at",
+            [str(s) for s in IN_FLIGHT] + [now() - older_than_s],
+        ).fetchall()
+        return [_row(r) for r in rows]
+
+    def spent_minor(self, principal_id: str) -> int:
+        marks = ", ".join("?" for _ in BUDGET_STATES)
+        r = self.conn.execute(
+            f"SELECT COALESCE(SUM(authorized_amount_minor), 0) FROM purchases WHERE principal_id = ? AND payment_status IN ({marks})",
+            [principal_id] + [str(s) for s in BUDGET_STATES],
+        ).fetchone()
+        return int(r[0])
+
+    # ---- evidence --------------------------------------------------------
+    def add_evidence(self, purchase_id: str, kind: str, payload: dict[str, Any]) -> str:
+        eid = new_id()
+        self.conn.execute(
+            "INSERT INTO evidence (evidence_id, purchase_id, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+            (eid, purchase_id, str(kind), json.dumps(payload, default=str), now()),
+        )
+        return eid
+
+    def list_evidence(self, purchase_id: str) -> list[Evidence]:
+        rows = self.conn.execute(
+            "SELECT * FROM evidence WHERE purchase_id = ? ORDER BY created_at, rowid", (purchase_id,)
+        ).fetchall()
+        return [Evidence(r["evidence_id"], r["purchase_id"], r["kind"], json.loads(r["payload"]), r["created_at"]) for r in rows]
+
+    # ---- findings --------------------------------------------------------
+    def add_finding(self, purchase_id: str, code: str, severity: str, summary: str,
+                    evidence_ids: list[str], safe_next_actions: list[str]) -> str:
+        fid = new_id()
+        self.conn.execute(
+            "INSERT INTO findings (finding_id, purchase_id, code, severity, summary, evidence_ids, safe_next_actions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (fid, purchase_id, str(code), severity, summary, json.dumps(list(evidence_ids)), json.dumps(list(safe_next_actions)), now()),
+        )
+        return fid
+
+    def findings_for_purchase(self, purchase_id: str) -> list[Finding]:
+        rows = self.conn.execute("SELECT * FROM findings WHERE purchase_id = ? ORDER BY created_at, rowid", (purchase_id,)).fetchall()
+        return [_finding(r) for r in rows]
+
+    def has_finding(self, purchase_id: str, code: str) -> bool:
+        r = self.conn.execute("SELECT 1 FROM findings WHERE purchase_id = ? AND code = ? LIMIT 1", (purchase_id, str(code))).fetchone()
+        return r is not None
+
+    def has_unresolved_service_finding(self, principal_id: str, service_id: str, code: str) -> bool:
+        r = self.conn.execute(
+            "SELECT 1 FROM findings f JOIN purchases p ON p.purchase_id = f.purchase_id "
+            "WHERE p.principal_id = ? AND p.service_id = ? AND f.code = ? AND f.resolved_at IS NULL LIMIT 1",
+            (principal_id, service_id, str(code)),
+        ).fetchone()
+        return r is not None
+
+    def resolve_findings(self, purchase_id: str, code: str) -> int:
+        cur = self.conn.execute(
+            "UPDATE findings SET resolved_at = ? WHERE purchase_id = ? AND code = ? AND resolved_at IS NULL",
+            (now(), purchase_id, str(code)),
+        )
+        return cur.rowcount
+
+    def resolve_service_findings(self, principal_id: str, service_id: str, code: str) -> int:
+        cur = self.conn.execute(
+            "UPDATE findings SET resolved_at = ? WHERE resolved_at IS NULL AND code = ? AND purchase_id IN "
+            "(SELECT purchase_id FROM purchases WHERE principal_id = ? AND service_id = ?)",
+            (now(), str(code), principal_id, service_id),
+        )
+        return cur.rowcount
+
+    def list_findings(self, principal_id: str, unresolved_only: bool = True) -> list[dict[str, Any]]:
+        where = "AND f.resolved_at IS NULL" if unresolved_only else ""
+        rows = self.conn.execute(
+            "SELECT f.*, p.service_id, p.payment_status, p.fulfillment_status, p.authorized_amount_minor, p.purchase_intent_id "
+            f"FROM findings f JOIN purchases p ON p.purchase_id = f.purchase_id WHERE p.principal_id = ? {where} "
+            "ORDER BY f.created_at, f.rowid",
+            (principal_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = _finding(r).to_dict()
+            d.update(service_id=r["service_id"], payment_status=r["payment_status"], fulfillment_status=r["fulfillment_status"],
+                     authorized_amount_minor=r["authorized_amount_minor"], purchase_intent_id=r["purchase_intent_id"])
+            out.append(d)
+        return out
+
+    # ---- admin -----------------------------------------------------------
+    def reset(self, principal_id: str) -> dict[str, int]:
+        ids = [r[0] for r in self.conn.execute("SELECT purchase_id FROM purchases WHERE principal_id = ?", (principal_id,)).fetchall()]
+        counts = {"purchases": 0, "evidence": 0, "findings": 0}
+        if not ids:
+            return counts
+        marks = ", ".join("?" for _ in ids)
+        counts["evidence"] = self.conn.execute(f"DELETE FROM evidence WHERE purchase_id IN ({marks})", ids).rowcount
+        counts["findings"] = self.conn.execute(f"DELETE FROM findings WHERE purchase_id IN ({marks})", ids).rowcount
+        counts["purchases"] = self.conn.execute(f"DELETE FROM purchases WHERE purchase_id IN ({marks})", ids).rowcount
+        return counts
