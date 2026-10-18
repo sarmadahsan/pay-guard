@@ -221,7 +221,7 @@ def not_truncated(service: Service, args: dict[str, Any], art: Artifact) -> Vali
             try:
                 json.loads(raw)
                 checks["json"] = "parses"
-            except ValueError as e:
+            except (ValueError, RecursionError) as e:  # same pair store_artifact catches; a nested bomb must not raise
                 cut = _json_cut(raw) if raw.strip() else "empty body"
                 if cut:
                     checks["json"] = cut
@@ -229,7 +229,7 @@ def not_truncated(service: Service, args: dict[str, Any], art: Artifact) -> Vali
                 else:
                     malformed = f"malformed json ({e})"[:160]
                     checks["json"] = malformed
-    if raw is not None and (_TEXTISH.match(ct) or art.kind == "bytes") and label != "pdf":
+    if raw is not None and _TEXTISH.match(ct):  # text-like only: zip/gzip/tar legitimately end in NUL bytes
         text = _text_problems(raw)
         if text:
             checks["text"] = text

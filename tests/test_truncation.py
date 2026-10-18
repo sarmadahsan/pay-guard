@@ -177,6 +177,21 @@ def test_json_cut_inside_multibyte_reports_both(reg, tmp_path):
     assert ok is False and d["reason"].startswith("json truncated (unterminated string; cut inside a UTF-8")
 
 
+def test_binary_bodies_ending_in_nul_are_not_text_checked(reg, tmp_path):
+    for ct, body in (("application/zip", b"PK\x05\x06" + b"\x00" * 18), ("application/gzip", b"\x1f\x8b\x08" + b"\x00" * 10),
+                     ("application/octet-stream", b"\x00" * 1024)):
+        art = store_artifact(body, ct, "p1", tmp_path)
+        assert art.kind == "bytes" and not_truncated(reg["report"], {}, art)[1] is True, ct
+
+
+def test_deeply_nested_json_bomb_does_not_raise(reg, tmp_path):
+    body = b"[" * 100_000 + b"]" * 100_000
+    art = store_artifact(body, "application/json", "p1", tmp_path)
+    assert art.kind == "bytes"
+    _, ok, d = not_truncated(reg["report"], {}, art)
+    assert ok is False and d["reason"].startswith("malformed json (")
+
+
 def test_invalid_utf8_in_the_middle_is_not_truncation(reg, tmp_path):
     art = store_artifact(b"he\xffllo", "text/plain", "p1", tmp_path)
     assert not_truncated(reg["report"], {}, art)[1] is True
