@@ -1,7 +1,7 @@
 """Human-only approval of a second payment for a superseded purchase (design §3 N2/S8). Not an MCP tool.
 
-Creates attempt = max + 1 for the same (principal, intent, fingerprint) key, lifts the service's
-PAID_NO_DELIVERY quarantine, then runs design §3 steps 2-7. The new payment counts against the budget.
+Creates attempt = latest + 1 for the same (principal, intent, fingerprint) key, runs design §3 steps 2-7, and
+lifts the service's PAID_NO_DELIVERY quarantine only if the new payment SETTLED. It counts against the budget.
 
 Do not run while the MCP server is buying: the budget lock is per-process.
 
@@ -73,9 +73,11 @@ async def main() -> int:
         print("refused: another approval already took the next attempt number; re-check with list_purchases")
         return 2
     repo.append_history(new.purchase_id, history_entry("APPROVED_BY_CLI", reason=args.reason, supersedes=latest.purchase_id))
-    lifted = repo.resolve_service_findings(prior.principal_id, prior.service_id, FindingCode.PAID_NO_DELIVERY)
-    print(f"created attempt {new.attempt} ({new.purchase_id}) superseding {latest.purchase_id}; "
-          f"resolved {lifted} PAID_NO_DELIVERY finding(s)")
+    # Quarantine is enforced only by the agent-facing guard. Lift it only once this retry has SETTLED, and only for the
+    # findings that existed before it: a retry that settles without delivery gets its own PAID_NO_DELIVERY in _verify.
+    quarantined = [f["purchase_id"] for f in repo.list_findings(prior.principal_id)
+                   if f["service_id"] == prior.service_id and f["code"] == FindingCode.PAID_NO_DELIVERY]
+    print(f"created attempt {new.attempt} ({new.purchase_id}) superseding {latest.purchase_id}")
     try:
         row = await run_from_quote(deps, new, service, prior.args, time.monotonic() + CALL_BUDGET_S)
     except BaseException:
@@ -84,6 +86,11 @@ async def main() -> int:
             repo.update_status(new.purchase_id, cur.payment_status, PaymentStatus.ABANDONED,
                                history_entry("ABANDONED", by="approve_retry", reason="cli aborted"))
         raise
+    if row.payment_status == PaymentStatus.SETTLED:
+        lifted = sum(repo.resolve_findings(pid, FindingCode.PAID_NO_DELIVERY) for pid in quarantined)
+        print(f"settled; resolved {lifted} prior PAID_NO_DELIVERY finding(s)")
+    else:
+        print(f"not settled ({row.payment_status}); quarantine left in place")
     print(json.dumps(build_response(deps, row), indent=2, default=str))
     return 0
 
