@@ -60,7 +60,7 @@ def test_unknown_validator_raises(reg):
         run_validators(svc, {}, json_art({}))
 
 
-@pytest.mark.parametrize("body", [b"[" * 100000 + b"]" * 100000, b'{"a":' + b"9" * 5000 + b"}"])
+@pytest.mark.parametrize("body", [b"[" * 100000 + b"]" * 100000, b'{"a":' + b"9" * 5000 + b"}"], ids=["deep_nesting", "huge_int"])
 def test_hostile_json_falls_back_to_bytes(tmp_path, body):
     art = store_artifact(body, "application/json", "p9", tmp_path)
     assert art.kind == "bytes" and art.path
