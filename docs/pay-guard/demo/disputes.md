@@ -22,14 +22,17 @@ Filing moves no money, so the agent may do it unprompted. PayGuard arbitrates no
 In `.env` (never committed):
 
 ```
-PRIMITIVE_API_KEY=prim_...          # empty = dry run (see below)
-PRIMITIVE_FROM=payguard@<your-domain-on-primitive>
-SELLER_CONTACT_EMAIL=you@example.com  # fallback for sellers without /.well-known/x402-seller.json
+PRIMITIVE_API_KEY=prim_...                     # empty = dry run (see below)
+PRIMITIVE_FROM=buyer@agent.markavy.com         # the buyer agent's Primitive inbox
+SELLER_CONTACT_EMAIL=seller@agent.markavy.com  # fallback for sellers without /.well-known/x402-seller.json
 ```
 
-Recipient resolution, in order: `GET {seller origin}/.well-known/x402-seller.json` → `support_email`
-(Meridian Intel publishes one), then `SELLER_CONTACT_EMAIL`. PayGuard's own demo sellers on :8402 publish
-nothing, so set the fallback to an inbox you control to show the reply beat.
+Recipient resolution, in order: `GET {seller origin}/.well-known/x402-seller.json` → `support_email`,
+then `SELLER_CONTACT_EMAIL`. Meridian Intel on :8403 publishes `support_email=seller@agent.markavy.com`;
+PayGuard's own demo sellers on :8402 publish nothing and fall back to the env value, so every dispute in
+the demo lands in the same inbox. That inbox is a second Primitive agent inbox the operator controls, so
+its reply comes back through Primitive and `check_dispute` finds it by the sent-email id (never by sender
+address): `GET /sent-emails/{dispute_id}/reply`.
 
 **Dry run.** With `PRIMITIVE_API_KEY` empty, `file_dispute` renders the same email and writes it to
 `$PAYGUARD_ARTIFACT_DIR/disputes/<purchase_id>.txt` (headers, body, attachment) and returns
@@ -45,13 +48,13 @@ After the Meridian beat (`docs/pay-guard/demo/meridian.md`) has left a `PAID_NO_
 1. > File a dispute for every unresolved finding.
 
    The agent calls `list_findings`, then `file_dispute` per purchase. Expected result per purchase:
-   `dispute_id`, `to` (Meridian's `support_email` from its well-known file), `subject`
+   `dispute_id`, `to` = `seller@agent.markavy.com` (Meridian's `support_email` from its well-known file), `subject`
    `Dispute: intel purchase <id> (0.500000 USDC)`, a 400-char `body_preview`, `evidence_count`,
    `explorer_url`. `get_purchase` now shows `dispute: {status: "awaiting_reply", reply_count: 0}` and the
    headline ends `· dispute filed`. A verified purchase is refused with `error: ... no unresolved proven
    finding to dispute`.
 
-2. Later, once Meridian's agent has answered the Primitive inbox:
+2. Later, once the seller's agent has answered from `seller@agent.markavy.com`:
 
    > Check whether Meridian replied.
 
