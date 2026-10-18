@@ -163,9 +163,11 @@ def test_reset_leaves_other_principal(repo):
     assert len(repo.findings_for_purchase(other.purchase_id)) == 1
 
 
-def test_open_repository_supabase_not_available_yet(monkeypatch):
+def test_open_repository_supabase_needs_env(monkeypatch):
     from payguard.store import open_repository
 
     monkeypatch.setenv("PAYGUARD_STORE", "supabase")
-    with pytest.raises(NotImplementedError, match="Supabase backend is not available yet"):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="SUPABASE_URL"):
         open_repository()
