@@ -28,6 +28,9 @@
       "SUPABASE_URL": "Supabase project URL when PAYGUARD_STORE=supabase.",
       "SUPABASE_SERVICE_KEY": "Supabase service key (secret) when PAYGUARD_STORE=supabase.",
       "INTEL_BASE_URL": "Enables get_intel_report (Meridian Intel demo seller).",
+      "PRIMITIVE_API_KEY": "Primitive mail key (secret) for file_dispute/check_dispute and auto_dispute; empty = offline dry run.",
+      "PRIMITIVE_FROM": "The buyer agent's own Primitive inbox address (required when PRIMITIVE_API_KEY is set).",
+      "SELLER_CONTACT_EMAIL": "Fallback dispute recipient for sellers without /.well-known/x402-seller.json.",
       "BAZAAR_URL": "Enables the Bazaar tool (public x402 seller on Base mainnet).",
       "BAZAAR_PAY_TO": "Bazaar seller pay-to address.",
       "BAZAAR_PRICE_MINOR": "Bazaar accepted price in USDC minor units.",
@@ -40,6 +43,24 @@
     "get_public_data": "BAZAAR_URL + BAZAAR_PRICE_MINOR"
   },
   "tools": [
+    {
+      "name": "check_dispute",
+      "description": "Check whether the seller replied to a filed dispute. Records any reply as evidence and surfaces it for a human; never resolves the finding or pays anything.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id"
+        ],
+        "type": "object"
+      }
+    },
     {
       "name": "convert_document",
       "description": "Convert a document to a PDF with the given page count: $2.00 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
@@ -76,6 +97,24 @@
           "doc_id",
           "pages",
           "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "file_dispute",
+      "description": "File a dispute with the seller for a purchase that has an unresolved proven finding (paid but nothing delivered, delivery failed checks, or overcharged): emails the seller's agent from PayGuard's own inbox with the redacted evidence attached and records the thread. One dispute per purchase; moves no money.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id"
         ],
         "type": "object"
       }
@@ -240,7 +279,7 @@
     },
     {
       "name": "get_spending_policy",
-      "description": "Show the spending mandate (budget, per-purchase cap, allowed services) and what has been spent.",
+      "description": "Show the spending mandate (budget, per-purchase cap, allowed services, auto_dispute) and what has been spent.",
       "parameters": {
         "additionalProperties": false,
         "properties": {},
