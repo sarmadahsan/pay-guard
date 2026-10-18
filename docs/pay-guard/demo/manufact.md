@@ -38,7 +38,7 @@ The operator has three choices. Each one is a decision for the user, not a step 
 
 1. **Pitch without Manufact (recommended for 2026-10-18).** Use the README's "Install from Manufact" section as written. It shows the one-file install that Claude Desktop uses today, and `mcp-tools.json` as the advertised tool surface.
 2. **Host a read-only demo listing on Manufact.** This would need an HTTP entry point that exposes only the admin tools with no wallet keys. It is a new task, because it changes the server and the listing would not be able to buy anything.
-3. **List PayGuard where stdio servers are accepted.** The official MCP Registry (`server.json` with a PyPI package and stdio transport) and a Claude Desktop extension bundle (`.mcpb`, one-click install with user-entered secrets) both accept a local stdio server with env variables declared by name. Either would be a new task.
+3. **List PayGuard where stdio servers are accepted.** The official MCP Registry (`server.json` with a PyPI package and stdio transport) and a Claude Desktop extension bundle (`.mcpb`, one-click install with user-entered secrets) both accept a local stdio server with env variables declared by name. Either would be a new task. The `.mcpb` bundle now exists: docs/pay-guard/demo/mcpb.md.
 
 If the user still picks a hosted Manufact deploy, the remaining steps start with `mcp-use login`, which needs the operator's account.
 

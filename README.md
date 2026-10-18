@@ -37,7 +37,20 @@ No escrow, no refunds, no fact-checking of purchased content, no universal MCP p
 
 PayGuard is not listed on Manufact. Manufact Cloud only hosts MCP servers reached over HTTPS, and PayGuard runs locally over stdio so wallet keys never leave your machine. Details and options: docs/pay-guard/demo/manufact.md.
 
-Install it in Claude Desktop instead, with the same command Claude Desktop already uses:
+## Install in Claude Desktop (one click)
+
+`mcpb/manifest.json` is a Claude Desktop extension. It runs the same local stdio server from your checkout; the buyer key is entered in Claude Desktop's settings form, not in a config file. Details: docs/pay-guard/demo/mcpb.md.
+
+1. Clone this repo, run `uv sync`, then `cp .env.example .env` and fill it with `uv run python scripts/setup_wallets.py` (`SELLER_BASE_URL` and `RPC_URL_SEPOLIA` are read from `.env`).
+2. Build the bundle: `npx -y @anthropic-ai/mcpb@2.1.2 pack mcpb dist/payguard.mcpb`.
+3. Double-click `dist/payguard.mcpb`. In the install form, pick your pay-guard checkout and paste the Sepolia buyer key (stored by Claude Desktop as a secret). If the extension cannot find `uv`, set "uv command" to the output of `which uv`.
+4. Ask Claude to run `list_services`.
+
+Remove any manual `payguard` entry from `claude_desktop_config.json` first, so only one copy of the server runs. Regenerate the manifest after changing a tool with `uv run python scripts/build_mcpb.py`.
+
+### Manual config
+
+Or add PayGuard by hand, with the same command the extension uses:
 
 1. Clone this repo, run `uv sync`, then `cp .env.example .env` and fill the keys with `uv run python scripts/setup_wallets.py`.
 2. Add this to `claude_desktop_config.json` and restart Claude Desktop:

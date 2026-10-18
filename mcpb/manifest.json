@@ -1,0 +1,121 @@
+{
+  "manifest_version": "0.3",
+  "name": "payguard",
+  "display_name": "PayGuard",
+  "version": "0.1.0",
+  "description": "Buyer protection for x402 purchases: pays once, verifies delivery, proves settlement on-chain, files disputes.",
+  "long_description": "PayGuard runs locally over stdio from your own pay-guard checkout. Wallet keys never leave your machine.\n\nClaude Desktop passes only `BUYER_KEY_SEPOLIA`, stored as a sensitive setting. Put every other variable in `<checkout>/.env` (see `.env.example`):\n\n- Required: `SELLER_BASE_URL`, `RPC_URL_SEPOLIA`\n- Optional: `BUYER_KEY_MAINNET`, `RPC_URL_MAINNET`, `PAYGUARD_STORE`, `PAYGUARD_SQLITE_PATH`, `PAYGUARD_ARTIFACT_DIR`, `PAYGUARD_POLICY`, `PAYGUARD_LOG_LEVEL`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `INTEL_BASE_URL`, `BAZAAR_URL`, `BAZAAR_PAY_TO`, `BAZAAR_PRICE_MINOR`, `BAZAAR_CONTENT_TYPE`, `BAZAAR_TOOL_NAME`\n\nEnv-gated tools appear only when configured: `get_intel_report` needs INTEL_BASE_URL, `get_public_data` needs BAZAAR_URL + BAZAAR_PRICE_MINOR.",
+  "author": {
+    "name": "sarmadahsan",
+    "url": "https://github.com/sarmadahsan"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sarmadahsan/pay-guard.git"
+  },
+  "homepage": "https://github.com/sarmadahsan/pay-guard",
+  "support": "https://github.com/sarmadahsan/pay-guard/issues",
+  "server": {
+    "type": "python",
+    "entry_point": "payguard/server.py",
+    "mcp_config": {
+      "command": "${user_config.uv_path}",
+      "args": [
+        "run",
+        "--directory",
+        "${user_config.repo_dir}",
+        "python",
+        "-m",
+        "payguard.server"
+      ],
+      "env": {
+        "BUYER_KEY_SEPOLIA": "${user_config.buyer_key_sepolia}"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "convert_document",
+      "description": "Convert a document to a PDF with the given page count: $2.00 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again."
+    },
+    {
+      "name": "get_company_report",
+      "description": "Buy a company report for a ticker: $0.50 USDC on Base Sepolia (tier='premium' asks the $0.75 route). Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again."
+    },
+    {
+      "name": "get_intel_report",
+      "description": "Buy an equity intel report for a ticker from Meridian Intel: $0.50 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again."
+    },
+    {
+      "name": "get_public_data",
+      "description": "Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar (https://bazaar.placeholder.invalid/resource): $0.01 USDC. This seller has never heard of PayGuard. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again."
+    },
+    {
+      "name": "get_purchase",
+      "description": "Get a purchase record with its history, evidence-backed findings and safe next actions."
+    },
+    {
+      "name": "get_research_report",
+      "description": "Buy a research report on a topic: $0.75 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again."
+    },
+    {
+      "name": "get_spending_policy",
+      "description": "Show the spending mandate (budget, per-purchase cap, allowed services) and what has been spent."
+    },
+    {
+      "name": "list_findings",
+      "description": "List findings (price mismatches, unknown settlements, missing or incomplete deliveries, blocked duplicates) with their evidence."
+    },
+    {
+      "name": "list_purchases",
+      "description": "List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. Also audits the buyer wallet on-chain (`wallet`): flags USDC paid outside PayGuard. Read-only."
+    },
+    {
+      "name": "list_services",
+      "description": "List the allowlisted services with their accepted prices, networks and validators."
+    },
+    {
+      "name": "reconcile_purchase",
+      "description": "Re-check an unknown settlement on-chain. Never creates a new payment; at most one identical resend."
+    }
+  ],
+  "tools_generated": false,
+  "keywords": [
+    "x402",
+    "payments",
+    "buyer-protection",
+    "base",
+    "usdc"
+  ],
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  },
+  "user_config": {
+    "repo_dir": {
+      "type": "directory",
+      "title": "pay-guard checkout",
+      "description": "Your local clone of pay-guard (after `uv sync` and filling .env). The server runs from here.",
+      "required": true
+    },
+    "buyer_key_sepolia": {
+      "type": "string",
+      "title": "Buyer key (Base Sepolia)",
+      "description": "0x-prefixed private key of the testnet buyer wallet (scripts/setup_wallets.py makes one). Stored by Claude Desktop as a secret and passed only to the local server.",
+      "sensitive": true,
+      "required": true
+    },
+    "uv_path": {
+      "type": "string",
+      "title": "uv command",
+      "description": "uv executable. Use the absolute path (run `which uv`) if Claude Desktop cannot find uv.",
+      "default": "uv",
+      "required": false
+    }
+  }
+}
