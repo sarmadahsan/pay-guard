@@ -119,7 +119,7 @@ def test_subject_and_short_tx():
 
 async def test_build_response_and_compact_carry_risk_and_headline(deps, seller):
     ok = await purchase(deps, "report", {"ticker": "ACME"}, "i1")
-    assert ok["risk"] == "green" and ok["headline"].startswith("🟢 Paid 0.500000 USDC · report ACME · verified 4/4")
+    assert ok["risk"] == "green" and ok["headline"].startswith("🟢 Paid 0.500000 USDC · report ACME · verified 5/5")
     bad = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i2")  # fake seller returns 12 pages
     assert bad["risk"] == "red" and "partial" in bad["headline"]
     refused = await purchase(deps, "report_premium", {"ticker": "ACME"}, "i3")

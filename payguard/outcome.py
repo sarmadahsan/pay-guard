@@ -29,6 +29,15 @@ class Outcome:
     def header(self, name: str) -> str | None:
         return self.headers.get(name.lower())
 
+    def declared_length(self) -> int | None:
+        """Content-Length as the seller declared it, or None when absent, non-numeric, or the body was content-encoded
+        (httpx hands back the decoded bytes, which a compressed Content-Length does not describe)."""
+        enc = (self.header("content-encoding") or "identity").strip().lower()
+        raw = (self.header("content-length") or "").strip()
+        if enc not in ("", "identity") or not raw.isdigit():
+            return None
+        return int(raw)
+
     def payment_required_error(self) -> str | None:
         """The 402's PAYMENT-REQUIRED.error if decodable. Informational only; never decides money (design §5)."""
         h = self.header(PAYMENT_REQUIRED_HEADER)
@@ -61,7 +70,8 @@ def classify_outcome(repo: Any, row: Purchase, outcome: Outcome, from_state: Pay
     fields: dict[str, Any] = {}
     if outcome.kind == "response" and 200 <= (outcome.status or 0) < 300:
         try:
-            art = artifacts.store_artifact(outcome.content, outcome.content_type, pid, Path(artifact_dir))
+            art = artifacts.store_artifact(outcome.content, outcome.content_type, pid, Path(artifact_dir),
+                                           declared_length=outcome.declared_length())
             repo.add_evidence(pid, EvidenceKind.ARTIFACT, art.evidence())
             fields["artifact_hash"] = art.sha256
         except Exception as e:  # noqa: BLE001  # a hostile body or bad artifact dir must not hide a settlement

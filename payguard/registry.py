@@ -48,13 +48,13 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
     usdc = USDC[SEPOLIA]
     services = [
         Service("report", "get_company_report", "GET", f"{base}/report/{{ticker}}", SEPOLIA, usdc, 500_000,
-                "application/json", ("content_type", "non_empty", "json_schema:company_report", "ticker_matches"), 40.0),
+                "application/json", ("not_truncated", "content_type", "non_empty", "json_schema:company_report", "ticker_matches"), 40.0),
         Service("report_premium", "get_company_report", "GET", f"{base}/report-premium/{{ticker}}", SEPOLIA, usdc, 500_000,
-                "application/json", ("content_type", "non_empty", "json_schema:company_report", "ticker_matches"), 40.0),
+                "application/json", ("not_truncated", "content_type", "non_empty", "json_schema:company_report", "ticker_matches"), 40.0),
         Service("research", "get_research_report", "GET", f"{base}/research-slow?topic={{topic}}", SEPOLIA, usdc, 750_000,
-                "application/json", ("content_type", "non_empty", "json_schema:research_report"), 15.0),  # S2
+                "application/json", ("not_truncated", "content_type", "non_empty", "json_schema:research_report"), 15.0),  # S2
         Service("convert", "convert_document", "POST", f"{base}/convert", SEPOLIA, usdc, 2_000_000,
-                "application/pdf", ("content_type", "non_empty", "pdf_page_count"), 40.0),
+                "application/pdf", ("not_truncated", "content_type", "non_empty", "pdf_page_count"), 40.0),
     ]
     # --- Meridian Intel (hackathon demo): an adversarial Sepolia seller that settles, then answers 402 "Payment failed...
     # retry" (double-charge trap). Registered only when INTEL_BASE_URL is set; it runs on its own port (8403 by default)
@@ -64,7 +64,7 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
     if intel_url:
         intel = intel_url.rstrip("/")
         services.append(Service("intel", "get_intel_report", "GET", f"{intel}/intel/{{ticker}}", SEPOLIA, usdc, 500_000,
-                                "application/json", ("content_type", "non_empty", "ticker_matches"), 40.0))
+                                "application/json", ("not_truncated", "content_type", "non_empty", "ticker_matches"), 40.0))
     # --- Bazaar seller (M7): registered only when the probe's env lines are present ---
     bazaar_url = os.environ.get("BAZAAR_URL")
     if bazaar_url:
@@ -79,6 +79,6 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
             services.append(Service(
                 "bazaar", os.environ.get("BAZAAR_TOOL_NAME", "get_public_data"), "GET", bazaar_url, MAINNET, USDC[MAINNET],
                 price, os.environ.get("BAZAAR_CONTENT_TYPE", "application/json"),
-                ("non_empty", "content_hash"), 40.0,
+                ("not_truncated", "non_empty", "content_hash"), 40.0,
             ))
     return {s.id: s for s in services}

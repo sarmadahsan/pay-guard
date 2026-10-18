@@ -29,7 +29,7 @@ def seed(repo, status, fulfillment=FulfillmentStatus.PENDING, intent="i1", fp=FP
 
 async def test_verified_purchase_reports_transaction_delivery_and_budget(deps, seller):
     r = await purchase(deps, "report", {"ticker": "ACME"}, "i1")
-    assert r["delivery"] == {"level": "verified", "basis": "all checks passed", "checks_passed": 4, "checks_total": 4,
+    assert r["delivery"] == {"level": "verified", "basis": "all checks passed", "checks_passed": 5, "checks_total": 5,
                              "failed": [], "artifact_sha256": r["artifact"]["sha256"], "proven_findings": []}
     (tx,) = r["transactions"]
     assert tx["status"] == "settled" and tx["proof"] == "seller_receipt" and tx["settlement_tx"] == seller.tx

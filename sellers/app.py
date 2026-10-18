@@ -5,6 +5,9 @@ Routes (design §4):
   GET  /research-slow?topic=     $0.75  JSON research result (M5 adds the after-settle stall hook)
   POST /convert {doc_id, pages}  $2.00  PDF, always 12 pages
   GET  /report-premium/{ticker}  $0.75  same as /report (registry accepts $0.50 -> PRICE_MISMATCH)
+
+Opt-in misbehaviour switches (env, default off): SELLER_STALL_S (after-settle stall on /research-slow) and
+SELLER_TRUNCATE_PATHS (cut the settled body of the listed route prefixes short, see sellers/truncate.py).
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from x402.mechanisms.evm.exact import ExactEvmServerScheme
 from x402.server import x402ResourceServer
 
 from sellers.stall import make_stall_hook
+from sellers.truncate import install_truncation
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -78,6 +82,11 @@ _middleware = payment_middleware(ROUTES, server)
 @app.middleware("http")
 async def x402_middleware(request: Request, call_next):
     return await _middleware(request, call_next)
+
+
+# Opt-in truncation demo (SELLER_TRUNCATE_PATHS=/convert). Added after the x402 middleware so it wraps it and only
+# ever sees settled 2xx responses; with the env var unset nothing is installed.
+install_truncation(app)
 
 
 def company_record(ticker: str) -> dict:

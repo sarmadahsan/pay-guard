@@ -31,7 +31,7 @@ def test_store_binary_artifact_as_path(tmp_path):
 def test_report_validators_pass(reg):
     art = json_art({"ticker": "ACME", "name": "Acme", "revenue_usd": 5, "fiscal_year": 2025, "summary": "s"})
     results = run_validators(reg["report"], {"ticker": "ACME"}, art)
-    assert [r[0] for r in results] == ["content_type", "non_empty", "json_schema:company_report", "ticker_matches"]
+    assert [r[0] for r in results] == ["not_truncated", "content_type", "non_empty", "json_schema:company_report", "ticker_matches"]
     assert all(r[1] for r in results)
 
 

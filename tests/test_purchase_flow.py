@@ -29,7 +29,7 @@ async def test_happy_path_report_settled_verified(deps, seller):
         "INTENT_RECORDED", "QUOTED", "AUTHORIZED", "PAYLOAD_SIGNED", "SENT", "SETTLED", "VERIFIED"]
     assert kinds(deps, r["purchase_id"]) == [
         "quote", "selected_requirement", "authorization", "payment_payload", "artifact", "settlement",
-        "validator", "validator", "validator", "validator"]
+        "validator", "validator", "validator", "validator", "validator"]
     assert len(seller.paid) == 1 and deps.repo.spent_minor("test") == 500_000 and r["findings"] == []
     assert r["explorer_url"].startswith("https://sepolia.basescan.org/tx/")
 

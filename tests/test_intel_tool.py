@@ -33,7 +33,7 @@ def test_intel_service_registered_only_with_env(monkeypatch):
     assert svc.tool_name == "get_intel_report" and svc.method == "GET"
     assert svc.network == SEPOLIA and svc.asset == USDC[SEPOLIA] and svc.accepted_price_minor == 500_000
     assert svc.expected_content_type == "application/json"
-    assert svc.validators == ("content_type", "non_empty", "ticker_matches")
+    assert svc.validators == ("not_truncated", "content_type", "non_empty", "ticker_matches")
     assert svc.timeout_s == 40.0
     assert svc.build_request({"ticker": "AC/ME"}) == ("GET", f"{MERIDIAN}/intel/AC%2FME", None)
     assert svc.to_dict()["accepted_price_usdc"] == "0.50"

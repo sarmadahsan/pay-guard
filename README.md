@@ -33,4 +33,8 @@ No escrow, no refunds, no fact-checking of purchased content, no universal MCP p
     uv run python -m payguard.server               # MCP server over stdio (Claude Desktop launches this)
     uv run pytest -q
 
+Demo switches on the seller (env, default off): `SELLER_STALL_S` (after-settle stall on `/research-slow`) and
+`SELLER_TRUNCATE_PATHS=/convert` (settled body cut to 60%; PayGuard reports a proven "pdf truncated" failure, see
+docs/pay-guard/demo/truncation.md).
+
 Plan: docs/pay-guard/design/2026-10-17-pay-guard-implementation-plan.md
