@@ -52,7 +52,8 @@ def json_schema(schema_name: str) -> Validator:
 
 def ticker_matches(service: Service, args: dict[str, Any], art: Artifact) -> ValidatorResult:
     expected = str(args.get("ticker") or "").upper()
-    actual = str((art.json or {}).get("ticker", "")).upper() if art.kind == "json" and isinstance(art.json, dict) else ""
+    raw = art.json.get("ticker") if art.kind == "json" and isinstance(art.json, dict) else None
+    actual = raw.upper() if isinstance(raw, str) else ""
     ok = bool(expected) and expected == actual
     return "ticker_matches", ok, {"expected": expected, "actual": actual, **({} if ok else {"reason": f"ticker {actual!r} != requested {expected!r}"})}
 

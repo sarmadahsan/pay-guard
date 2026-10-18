@@ -55,6 +55,9 @@ def store_artifact(body: bytes, content_type: str, purchase_id: str, root: Path)
     root.mkdir(parents=True, exist_ok=True)
     ext = "pdf" if ct == "application/pdf" else "bin"
     path = root / f"{purchase_id}.{ext}"
+    if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+        # A different body for the same purchase: keep the earlier file so its recorded sha256 stays true.
+        path = root / f"{purchase_id}-{sha[:16]}.{ext}"
     path.write_bytes(body)
     art = Artifact("pdf" if ext == "pdf" else "bytes", ct, sha, len(body), path=str(path))
     if art.kind == "pdf":

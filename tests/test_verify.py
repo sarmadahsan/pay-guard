@@ -83,3 +83,18 @@ def test_content_type_requires_equality(reg):
     art.content_type = "application/jsonx"
     results = dict((r[0], r) for r in run_validators(reg["report"], {"ticker": "ACME"}, art))
     assert results["content_type"][1] is False
+
+
+def test_conflicting_store_does_not_overwrite_earlier_artifact(tmp_path):
+    first = store_artifact(b"%PDF-1.4 one", "application/pdf", "p5", tmp_path)
+    second = store_artifact(b"%PDF-1.4 two", "application/pdf", "p5", tmp_path)
+    assert first.path != second.path
+    assert Path(first.path).read_bytes() == b"%PDF-1.4 one" and Path(second.path).read_bytes() == b"%PDF-1.4 two"
+    again = store_artifact(b"%PDF-1.4 one", "application/pdf", "p5", tmp_path)
+    assert again.path == first.path
+
+
+def test_null_json_ticker_does_not_match_none_string(reg):
+    art = json_art({"ticker": None, "name": "x", "revenue_usd": 1, "fiscal_year": 2025})
+    results = dict((r[0], r) for r in run_validators(reg["report"], {"ticker": "None"}, art))
+    assert results["ticker_matches"][1] is False
