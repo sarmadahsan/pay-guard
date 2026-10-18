@@ -70,6 +70,8 @@ class FindingCode(StrEnum):
     FULFILLMENT_FAILED = "FULFILLMENT_FAILED"
     FULFILLMENT_UNVERIFIED = "FULFILLMENT_UNVERIFIED"
     DUPLICATE_SUSPECTED = "DUPLICATE_SUSPECTED"
+    UNEXPLAINED_OUTFLOW = "UNEXPLAINED_OUTFLOW"  # wallet audit: USDC left the buyer wallet with no matching purchase
+    SETTLEMENT_NOT_ON_CHAIN = "SETTLEMENT_NOT_ON_CHAIN"  # wallet audit: SETTLED row with no transfer on-chain
 
 
 class RejectReason(StrEnum):

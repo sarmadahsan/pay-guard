@@ -7,7 +7,7 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-from payguard import wallet
+from payguard import chain, wallet
 from payguard.policy import load_policy
 from payguard.purchase import Deps
 from payguard.registry import load_registry
@@ -31,6 +31,9 @@ def build_deps() -> Deps:
         client_factory=wallet.build_client,
         http_factory=lambda svc: httpx.AsyncClient(timeout=svc.timeout_s),
         artifact_dir=_abs("PAYGUARD_ARTIFACT_DIR", "artifacts"),
+        balance_reader=chain.usdc_balance,
+        transfer_reader=chain.usdc_transfers,
+        buyer_address=wallet.buyer_address,
     )
 
 

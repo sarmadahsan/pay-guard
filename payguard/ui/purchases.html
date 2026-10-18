@@ -48,6 +48,12 @@
   .failed { color: var(--red); }
   a { color: var(--link); text-decoration: none; }
   a:hover { text-decoration: underline; }
+  .wallet { margin-bottom: 10px; font-size: 12px; padding: 6px 10px; border-radius: 8px; background: var(--card);
+    border-left: 4px solid var(--line); overflow-wrap: anywhere; }
+  .wallet.ok { border-left-color: var(--green); }
+  .wallet.drift { border-left-color: var(--red); color: var(--red); }
+  .wallet.unavailable { color: var(--muted); }
+  ul.outside { margin-bottom: 10px; }
   .empty, .error { padding: 6px 0; }
   .error { color: var(--red); }
 </style>
@@ -129,6 +135,47 @@
     return wrap;
   }
 
+  function explorerLink(href) {
+    var url = safeHttps(href);
+    if (!url) return null;
+    var a = el("a", null, "explorer ↗");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      request("ui/open-link", { url: url }).catch(function () { window.open(url, "_blank", "noopener"); });
+    });
+    return a;
+  }
+
+  // Wallet audit (list_purchases `wallet`): one line, plus a red row per payment made outside PayGuard.
+  function renderWallet(w) {
+    if (!w || typeof w !== "object" || !w.headline) return null;
+    var frag = document.createDocumentFragment();
+    var status = w.status === "ok" || w.status === "drift" ? w.status : "unavailable";
+    frag.appendChild(el("div", "wallet " + status, w.headline));
+    var outs = Array.isArray(w.unexplained_outflows) ? w.unexplained_outflows : [];
+    if (outs.length) {
+      var ul = el("ul", "outside");
+      outs.forEach(function (o) {
+        var li = el("li", "red");
+        li.appendChild(el("span", "badge red", "red"));
+        li.appendChild(el("div", "title", "Paid outside PayGuard · " + o.amount_usdc + " USDC"));
+        var meta = el("div", "meta");
+        meta.appendChild(metaItem("to", o.to));
+        meta.appendChild(metaItem("tx", o.tx));
+        meta.appendChild(metaItem("block", o.block_number));
+        var a = explorerLink(o.explorer_url);
+        if (a) meta.appendChild(a);
+        li.appendChild(meta);
+        ul.appendChild(li);
+      });
+      frag.appendChild(ul);
+    }
+    return frag;
+  }
+
   function proofText(p) {
     if (p.proof === "chain_check") return "on-chain";
     if (p.proof === "seller_receipt") return "seller receipt";
@@ -148,18 +195,8 @@
     meta.appendChild(metaItem("delivery", p.delivery_level || "none"));
     if (p.failed_checks && p.failed_checks.length) meta.appendChild(metaItem("failed", p.failed_checks.join(", "), "failed"));
     meta.appendChild(metaItem("proof", proofText(p)));
-    var url = safeHttps(p.explorer_url);
-    if (url) {
-      var a = el("a", null, "explorer ↗");
-      a.href = url;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.addEventListener("click", function (ev) {
-        ev.preventDefault();
-        request("ui/open-link", { url: url }).catch(function () { window.open(url, "_blank", "noopener"); });
-      });
-      meta.appendChild(a);
-    }
+    var a = explorerLink(p.explorer_url);
+    if (a) meta.appendChild(a);
     li.appendChild(meta);
     return li;
   }
@@ -170,6 +207,8 @@
     if (data.error) { root.appendChild(el("div", "error", data.error)); return reportSize(); }
     var budget = renderBudget(data.budget);
     if (budget) root.appendChild(budget);
+    var wallet = renderWallet(data.wallet);
+    if (wallet) root.appendChild(wallet);
     var rows = Array.isArray(data.purchases) ? data.purchases : (data.purchase_id ? [fromSingle(data)] : []);
     if (!rows.length) { root.appendChild(el("div", "empty muted", "No purchases yet.")); return reportSize(); }
     var ul = el("ul");

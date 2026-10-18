@@ -337,6 +337,19 @@ class SupabaseRepository:
             out.append(d)
         return out
 
+    # ---- wallet audit ----------------------------------------------------
+    def get_wallet_state(self, principal_id: str, network: str) -> dict[str, Any] | None:
+        data = (self._t("wallet_audit").select("state").eq("principal_id", principal_id).eq("network", network)
+                .limit(1).execute().data)
+        return data[0]["state"] if data else None
+
+    def save_wallet_state(self, principal_id: str, network: str, state: dict[str, Any],
+                          create_only: bool = False) -> dict[str, Any]:
+        self._t("wallet_audit").upsert({"principal_id": principal_id, "network": network, "state": state,
+                                        "updated_at": now()},
+                                       on_conflict="principal_id,network", ignore_duplicates=create_only).execute()
+        return self.get_wallet_state(principal_id, network) or state
+
     # ---- admin -----------------------------------------------------------
     def reset(self, principal_id: str) -> dict[str, int]:
         # Not one transaction: PostgREST runs each request in its own transaction. Children are deleted
@@ -347,4 +360,8 @@ class SupabaseRepository:
             ev += len(self._t("evidence").delete().in_("purchase_id", ids).execute().data or [])
             fi += len(self._t("findings").delete().in_("purchase_id", ids).execute().data or [])
         pu = len(self._t("purchases").delete().eq("principal_id", principal_id).execute().data or [])
+        try:  # the wallet baseline (issue #87); a database without the wallet_audit table has none to clear
+            self._t("wallet_audit").delete().eq("principal_id", principal_id).execute()
+        except APIError as e:
+            log.warning("reset: could not clear wallet_audit for %s: %s", principal_id, e)
         return {"purchases": pu, "evidence": ev, "findings": fi}

@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS findings (
   resolved_at REAL
 );
 CREATE INDEX IF NOT EXISTS idx_findings_purchase ON findings (purchase_id);
+CREATE TABLE IF NOT EXISTS wallet_audit (
+  principal_id TEXT NOT NULL,
+  network TEXT NOT NULL,
+  state TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY (principal_id, network)
+);
 """
 
 PURCHASE_COLS = (
@@ -336,6 +343,20 @@ class SqliteRepository:
             out.append(d)
         return out
 
+    # ---- wallet audit ----------------------------------------------------
+    def get_wallet_state(self, principal_id: str, network: str) -> dict[str, Any] | None:
+        r = self._q("SELECT state FROM wallet_audit WHERE principal_id = ? AND network = ?",
+                    (principal_id, network)).fetchone()
+        return json.loads(r["state"]) if r else None
+
+    def save_wallet_state(self, principal_id: str, network: str, state: dict[str, Any],
+                          create_only: bool = False) -> dict[str, Any]:
+        """Upsert the state; with create_only an existing state wins (two processes taking a baseline at once)."""
+        verb = "INSERT OR IGNORE" if create_only else "INSERT OR REPLACE"
+        self._q(f"{verb} INTO wallet_audit (principal_id, network, state, updated_at) VALUES (?, ?, ?, ?)",
+                (principal_id, network, json.dumps(state), now()))
+        return self.get_wallet_state(principal_id, network) or state
+
     # ---- admin -----------------------------------------------------------
     def reset(self, principal_id: str) -> dict[str, int]:
         sub = "(SELECT purchase_id FROM purchases WHERE principal_id = ?)"
@@ -345,6 +366,7 @@ class SqliteRepository:
                 ev = self._q(f"DELETE FROM evidence WHERE purchase_id IN {sub}", (principal_id,)).rowcount
                 fi = self._q(f"DELETE FROM findings WHERE purchase_id IN {sub}", (principal_id,)).rowcount
                 pu = self._q("DELETE FROM purchases WHERE principal_id = ?", (principal_id,)).rowcount
+                self._q("DELETE FROM wallet_audit WHERE principal_id = ?", (principal_id,))  # the wallet baseline
                 self._q("COMMIT")
             except Exception:
                 self._q("ROLLBACK")

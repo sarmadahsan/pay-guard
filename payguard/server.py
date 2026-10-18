@@ -23,7 +23,7 @@ from fastmcp import FastMCP  # noqa: E402
 from fastmcp.apps.config import AppConfig  # noqa: E402
 from pydantic import Field  # noqa: E402
 
-from payguard import recovery  # noqa: E402
+from payguard import audit, recovery  # noqa: E402
 from payguard.deps import get_deps  # noqa: E402
 from payguard.models import PaymentStatus  # noqa: E402
 from payguard.purchase import CALL_BUDGET_S, purchase, reconcile_and_finish  # noqa: E402
@@ -115,11 +115,14 @@ async def list_findings(unresolved_only: bool = True) -> list[dict[str, Any]]:
     return deps.repo.list_findings(deps.policy.principal_id, unresolved_only=unresolved_only)
 
 
-@mcp.tool(description="List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. Read-only.", app=UI)
+@mcp.tool(description="List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. "
+                      "Also audits the buyer wallet on-chain (`wallet`): flags USDC paid outside PayGuard. Read-only.", app=UI)
 async def list_purchases(limit: int = 50) -> dict[str, Any]:
     deps = get_deps()
+    wallet = await audit.audit_wallet(deps)  # first: it may add on-chain proof or findings the rows below show
     rows = deps.repo.list_purchases(deps.policy.principal_id, limit=max(1, min(int(limit), 200)))
-    return {"budget": budget_summary(deps), "count": len(rows), "purchases": [compact_purchase(deps, r) for r in rows]}
+    return {"budget": budget_summary(deps), "wallet": wallet, "count": len(rows),
+            "purchases": [compact_purchase(deps, r) for r in rows]}
 
 
 @mcp.tool(description="Re-check an unknown settlement on-chain. Never creates a new payment; at most one identical resend.", app=UI)
