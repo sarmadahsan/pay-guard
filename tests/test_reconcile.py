@@ -657,7 +657,8 @@ async def test_registry_is_cleared_when_the_leader_raises_or_is_cancelled(make_d
     monkeypatch.setattr(rc, "_reconcile", boom)
     leader = asyncio.create_task(reconcile(deps, row, time.monotonic() + 45))
     await started.wait()
-    joined = await reconcile(deps, row, time.monotonic() + 45)  # a joiner never sees the leader's exception
+    # a joiner never sees the leader's exception (its budget is below RESEND_TIMEOUT_S, so it does not take the lead)
+    joined = await reconcile(deps, row, time.monotonic() + rc.RESEND_TIMEOUT_S - 1)
     assert joined.payment_status == "SETTLEMENT_UNKNOWN"
     with pytest.raises(RuntimeError, match="reconcile bug"):
         await leader
@@ -679,3 +680,59 @@ async def test_registry_is_cleared_when_the_leader_raises_or_is_cancelled(make_d
     deps.chain_reader = chain_seq(st(True, 9, int(time.time())))
     got = await reconcile(deps, row, time.monotonic() + 45)
     assert got.payment_status == "SETTLED" and rc._RUNNING == {}
+
+
+async def test_joiner_takes_the_lead_when_the_leader_ended_without_a_resend(make_deps):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    reader = gated_reader(st(False, 2, int(time.time())))
+    deps.chain_reader = reader
+    seller.paid_modes = ["ok"]
+    paid_before = len(seller.paid)
+    # the leader's budget is too short for a resend: it polls, then stops with "call budget exhausted"
+    leader = asyncio.create_task(reconcile(deps, row, time.monotonic() + rc.RESEND_TIMEOUT_S - 2))
+    while not reader.calls:
+        await asyncio.sleep(0)
+    joined = await reconcile(deps, row, time.monotonic() + 45)  # e.g. reconcile_purchase with a fresh budget
+    assert (await leader).payment_status == "SETTLEMENT_UNKNOWN"
+    assert joined.payment_status == "SETTLED"
+    assert len(seller.paid) == paid_before + 1  # one resend, made by the joiner after the leader ended
+    assert "reconcile_joined" in hist(deps, row.purchase_id)
+    assert rc._RUNNING == {}
+
+
+async def test_joiner_does_not_resend_again_after_the_leaders_resend(make_deps):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    reader = gated_reader(st(False, 2, int(time.time())))
+    deps.chain_reader = reader
+    seller.paid_modes = ["timeout"]  # the leader's resend does not settle either
+    paid_before = len(seller.paid)
+    a, b = await asyncio.gather(reconcile(deps, row, time.monotonic() + 45), reconcile(deps, row, time.monotonic() + 45))
+    assert a.payment_status == b.payment_status == "SETTLEMENT_UNKNOWN"
+    assert len(seller.paid) == paid_before + 1  # the joiner saw the leader's resend and did not make a second one
+    assert rc._RUNNING == {}
+
+
+async def test_registry_entry_from_another_event_loop_is_ignored(make_deps):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    deps.chain_reader = chain_seq(st(True, 9, int(time.time())))
+    dead = asyncio.new_event_loop()
+    try:
+        rc._RUNNING[row.purchase_id] = dead.create_future()  # left behind by a loop that closed mid-reconcile
+        got = await asyncio.wait_for(reconcile(deps, row, time.monotonic() + 45), timeout=5)
+    finally:
+        rc._RUNNING.pop(row.purchase_id, None)
+        dead.close()
+    assert got.payment_status == "SETTLED"
+    assert "reconcile_joined" not in hist(deps, row.purchase_id)
