@@ -1,0 +1,304 @@
+{
+  "server": "payguard",
+  "description": "Buyer protection for x402 purchases: pays once, verifies delivery, proves settlement on-chain, files disputes.",
+  "transport": "stdio",
+  "command": [
+    "uv",
+    "run",
+    "--directory",
+    "<repo>",
+    "python",
+    "-m",
+    "payguard.server"
+  ],
+  "env": {
+    "required": {
+      "BUYER_KEY_SEPOLIA": "Buyer wallet private key on Base Sepolia (secret; scripts/setup_wallets.py generates it).",
+      "SELLER_BASE_URL": "Base URL of the demo x402 sellers.",
+      "RPC_URL_SEPOLIA": "Base Sepolia JSON-RPC URL used to prove settlement on-chain."
+    },
+    "optional": {
+      "BUYER_KEY_MAINNET": "Buyer wallet private key on Base mainnet (secret; real funds; only for the Bazaar tool).",
+      "RPC_URL_MAINNET": "Base mainnet JSON-RPC URL.",
+      "PAYGUARD_STORE": "sqlite (default) or supabase.",
+      "PAYGUARD_SQLITE_PATH": "SQLite purchase ledger path.",
+      "PAYGUARD_ARTIFACT_DIR": "Where delivered artifacts are stored.",
+      "PAYGUARD_POLICY": "Spending policy YAML path.",
+      "PAYGUARD_LOG_LEVEL": "Log level (logs go to stderr).",
+      "SUPABASE_URL": "Supabase project URL when PAYGUARD_STORE=supabase.",
+      "SUPABASE_SERVICE_KEY": "Supabase service key (secret) when PAYGUARD_STORE=supabase.",
+      "INTEL_BASE_URL": "Enables get_intel_report (Meridian Intel demo seller).",
+      "BAZAAR_URL": "Enables the Bazaar tool (public x402 seller on Base mainnet).",
+      "BAZAAR_PAY_TO": "Bazaar seller pay-to address.",
+      "BAZAAR_PRICE_MINOR": "Bazaar accepted price in USDC minor units.",
+      "BAZAAR_CONTENT_TYPE": "Bazaar expected content type.",
+      "BAZAAR_TOOL_NAME": "Bazaar tool name (default get_public_data)."
+    }
+  },
+  "env_gated_tools": {
+    "get_intel_report": "INTEL_BASE_URL",
+    "get_public_data": "BAZAAR_URL + BAZAAR_PRICE_MINOR"
+  },
+  "tools": [
+    {
+      "name": "convert_document",
+      "description": "Convert a document to a PDF with the given page count: $2.00 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "doc_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "pages": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "purchase_intent_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "doc_id",
+          "pages",
+          "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_company_report",
+      "description": "Buy a company report for a ticker: $0.50 USDC on Base Sepolia (tier='premium' asks the $0.75 route). Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "ticker": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "purchase_intent_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "tier": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "premium"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_intel_report",
+      "description": "Buy an equity intel report for a ticker from Meridian Intel: $0.50 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "ticker": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "purchase_intent_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "ticker",
+          "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_public_data",
+      "description": "Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar (https://bazaar.placeholder.invalid/resource): $0.01 USDC. This seller has never heard of PayGuard. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_intent_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_purchase",
+      "description": "Get a purchase record with its history, evidence-backed findings and safe next actions.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_research_report",
+      "description": "Buy a research report on a topic: $0.75 USDC on Base Sepolia. Reuse the same purchase_intent_id when retrying the same purchase. Check `findings` and `safe_next_actions` in the result before spending again.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "topic": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "purchase_intent_id": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "topic",
+          "purchase_intent_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_spending_policy",
+      "description": "Show the spending mandate (budget, per-purchase cap, allowed services) and what has been spent.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "list_findings",
+      "description": "List findings (price mismatches, unknown settlements, missing or incomplete deliveries, blocked duplicates) with their evidence.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "unresolved_only": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "list_purchases",
+      "description": "List every purchase so far, newest first: payment status, delivery level, amount, on-chain proof, unresolved findings. Also audits the buyer wallet on-chain (`wallet`): flags USDC paid outside PayGuard. Read-only.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "default": 50,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "name": "list_services",
+      "description": "List the allowlisted services with their accepted prices, networks and validators.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "type": "object"
+      }
+    },
+    {
+      "name": "reconcile_purchase",
+      "description": "Re-check an unknown settlement on-chain. Never creates a new payment; at most one identical resend.",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "purchase_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "purchase_id"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

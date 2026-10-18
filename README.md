@@ -37,4 +37,20 @@ Demo switches on the seller (env, default off): `SELLER_STALL_S` (after-settle s
 `SELLER_TRUNCATE_PATHS=/convert` (settled body cut to 60%; PayGuard reports a proven "pdf truncated" failure, see
 docs/pay-guard/demo/truncation.md).
 
+## Install from Manufact
+
+PayGuard is not listed on Manufact. Manufact Cloud only hosts MCP servers reached over HTTPS, and PayGuard runs locally over stdio so wallet keys never leave your machine. Details and options: docs/pay-guard/demo/manufact.md.
+
+Install it in Claude Desktop instead, with the same command Claude Desktop already uses:
+
+1. Clone this repo, run `uv sync`, then `cp .env.example .env` and fill the keys with `uv run python scripts/setup_wallets.py`.
+2. Add this to `claude_desktop_config.json` and restart Claude Desktop:
+
+       {"mcpServers": {"payguard": {"command": "uv",
+         "args": ["run", "--directory", "/absolute/path/to/pay-guard", "python", "-m", "payguard.server"]}}}
+
+3. Ask Claude to run `list_services`.
+
+You supply these values in your local `.env`, never in the client config: `BUYER_KEY_SEPOLIA`, `SELLER_BASE_URL` and `RPC_URL_SEPOLIA` are required. The optional ones (mainnet key and RPC, store and policy paths, `INTEL_BASE_URL`, `BAZAAR_*`) are listed in `mcp-tools.json`, which also holds the full tool surface. Regenerate it after changing a tool with `uv run python scripts/export_tool_schema.py`.
+
 Plan: docs/pay-guard/design/2026-10-17-pay-guard-implementation-plan.md
