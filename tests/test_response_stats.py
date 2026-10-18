@@ -19,7 +19,8 @@ def seed(repo, status, fulfillment=FulfillmentStatus.PENDING, intent="i1", fp=FP
     row = repo.create_purchase(Purchase.new(principal_id="test", task_id=None, purchase_intent_id=intent,
                                             request_fingerprint=fp, service_id=service, args={"ticker": "ACME"},
                                             network="eip155:84532", attempt=attempt))
-    path = {P.SETTLED: (P.QUOTED, P.AUTHORIZED, P.PAYLOAD_SIGNED, P.SENT, P.SETTLED)}[status]
+    full = (P.QUOTED, P.AUTHORIZED, P.PAYLOAD_SIGNED, P.SENT, P.SETTLED)
+    path = full[: full.index(status) + 1]
     row = drive(repo, row, *path)
     if fulfillment != FulfillmentStatus.PENDING:
         repo.set_fulfillment(row.purchase_id, fulfillment)
@@ -103,3 +104,28 @@ async def test_list_purchases_tool_and_policy_budget(deps, monkeypatch):
     assert policy["currency"] == "USDC" and policy == {**policy, **budget_summary(deps)}
     listing = await tools["list_purchases"].fn(limit=5)
     assert listing["count"] == 1 and listing["budget"] == budget_summary(deps)
+
+
+def test_sent_is_an_in_progress_transaction(deps):
+    row = seed(deps.repo, P.SENT, intent="s")
+    (tx,) = build_response(deps, row)["transactions"]
+    assert tx["status"] == "in_progress" and tx["proof"] == "pending" and tx["explorer_url"] is None
+
+
+def test_settled_with_pending_fulfillment_is_unverified_checks_pending(deps):
+    row = seed(deps.repo, P.SETTLED, intent="p")
+    d = build_response(deps, row)["delivery"]
+    assert d["level"] == "unverified" and d["basis"] == "checks pending"
+
+
+def test_failed_basis_never_ends_with_bare_colon(deps):
+    row = seed(deps.repo, P.SETTLED, FulfillmentStatus.FAILED, intent="f")
+    assert build_response(deps, row)["delivery"]["basis"] == "artifact delivered but failed: validators failed"
+
+
+def test_negative_remaining_budget(deps):
+    row = seed(deps.repo, P.SETTLED, intent="n")
+    deps.repo.conn.execute("UPDATE purchases SET authorized_amount_minor = ? WHERE purchase_id = ?", (6_000_000, row.purchase_id))
+    deps.repo.conn.commit()
+    b = budget_summary(deps)
+    assert b["spent_minor"] == 6_000_000 and b["remaining_minor"] == -1_000_000 and b["remaining_usdc"] == "-1.000000"

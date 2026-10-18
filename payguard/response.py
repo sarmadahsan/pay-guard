@@ -54,6 +54,10 @@ def usdc(minor: int | None) -> str | None:
     return ("-" if minor < 0 else "") + _usdc(abs(minor))
 
 
+def _status_label(row: Purchase) -> str:
+    return "IN_PROGRESS" if row.payment_status in IN_FLIGHT else str(row.payment_status)
+
+
 def explorer_url(row: Purchase) -> str | None:
     base = EXPLORER.get(row.network)
     if not base:
@@ -75,9 +79,11 @@ def delivery_summary(row: Purchase, verification: list[dict[str, Any]], findings
     elif fs == FulfillmentStatus.VERIFIED:
         level, basis = "verified", "all checks passed"
     elif fs == FulfillmentStatus.FAILED:
-        level, basis = "partial", "artifact delivered but failed: " + ", ".join(failed)
+        level, basis = "partial", "artifact delivered but failed: " + (", ".join(failed) or "validators failed")
     elif fs == FulfillmentStatus.NO_DELIVERY:
         level, basis = "none", "settled with no artifact"
+    elif fs == FulfillmentStatus.PENDING:
+        level, basis = "unverified", "checks pending"
     else:
         level, basis = "unverified", "checks could not run"
     return {"level": level, "basis": basis, "checks_passed": len(passed), "checks_total": len(verification), "failed": failed,
@@ -91,6 +97,8 @@ def transaction_summary(row: Purchase, evidence: list[Any]) -> list[dict[str, An
             "network": row.network, "pay_to": row.pay_to, "settlement_tx": row.settlement_tx, "block_number": None,
             "explorer_url": explorer_url(row), "valid_before": row.valid_before}
     if row.payment_status == PaymentStatus.SETTLED:
+        # Chain-proven settlements are recorded as SETTLEMENT evidence with source "chain:AuthorizationUsed+Transfer"
+        # and a block_number by the M5 reconcile (Task 5.2); proof and block_number read that evidence.
         settle = [e.payload for e in evidence if e.kind == EvidenceKind.SETTLEMENT]
         last = settle[-1] if settle else {}
         proof = "chain_check" if str(last.get("source", "")).startswith("chain") else "seller_receipt"
@@ -116,7 +124,7 @@ def compact_purchase(deps: Any, row: Purchase) -> dict[str, Any]:
     findings = deps.repo.findings_for_purchase(row.purchase_id)
     tx = transaction_summary(row, evidence)
     return {"purchase_id": row.purchase_id, "purchase_intent_id": row.purchase_intent_id, "service_id": row.service_id,
-            "attempt": row.attempt, "payment_status": "IN_PROGRESS" if row.payment_status in IN_FLIGHT else str(row.payment_status),
+            "attempt": row.attempt, "payment_status": _status_label(row),
             "fulfillment_status": str(row.fulfillment_status),
             "delivery_level": delivery_summary(row, verification, findings)["level"],
             "amount_usdc": usdc(row.authorized_amount_minor), "settlement_tx": row.settlement_tx,
@@ -130,7 +138,7 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
     evidence = repo.list_evidence(row.purchase_id)
     verification = [e.payload for e in evidence if e.kind == EvidenceKind.VALIDATOR]
     art = artifacts.load_latest(repo, row.purchase_id)
-    status = "IN_PROGRESS" if row.payment_status in IN_FLIGHT else str(row.payment_status)
+    status = _status_label(row)
     settled = row.payment_status == PaymentStatus.SETTLED
     return {
         "purchase_id": row.purchase_id,
