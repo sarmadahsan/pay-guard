@@ -1,7 +1,8 @@
 """Wipe PayGuard demo state between rehearsals (design §8). Refuses to run without --yes.
 
 Deletes the configured principal's purchases, evidence and findings on the active store
-(PAYGUARD_STORE). Clears the 15-minute duplicate guard and the per-principal spend.
+(PAYGUARD_STORE). Clears the 15-minute duplicate guard, the per-principal spend and the
+wallet-audit baseline (the next purchase or list_purchases takes a fresh one).
 On-chain transfers are not undone. Artifact files are left on disk.
 """
 from __future__ import annotations

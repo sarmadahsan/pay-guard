@@ -61,9 +61,19 @@ create table if not exists findings (
 );
 create index if not exists idx_findings_purchase on findings (purchase_id);
 
+-- Wallet audit baseline and scan cursor (issue #87), one JSON state per principal and network.
+create table if not exists wallet_audit (
+  principal_id text not null,
+  network text not null,
+  state jsonb not null,
+  updated_at double precision not null,
+  primary key (principal_id, network)
+);
+
 alter table purchases enable row level security;
 alter table evidence enable row level security;
 alter table findings enable row level security;
+alter table wallet_audit enable row level security;
 
 -- Newer projects may not grant table privileges to service_role by default. GRANT is idempotent.
-grant select, insert, update, delete on purchases, evidence, findings to service_role;
+grant select, insert, update, delete on purchases, evidence, findings, wallet_audit to service_role;

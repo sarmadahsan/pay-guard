@@ -18,7 +18,7 @@ from x402.http.utils import (
 )
 from x402.schemas import PaymentRequired, PaymentRequirements
 
-from payguard import artifacts, guard, reconcile, verify
+from payguard import artifacts, audit, guard, reconcile, verify
 from payguard.guard import IntentDecision
 from payguard.models import (
     EvidenceKind,
@@ -53,6 +53,10 @@ class Deps:
     artifact_dir: Path
     chain_reader: Callable[..., Awaitable[Any]] | None = None  # M5: (network, from, nonce, pay_to, value_minor, since_ts) -> ChainState
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    # Wallet audit (#87), read-only. None disables it (tests); deps.build_deps wires the real chain readers.
+    balance_reader: Callable[..., Awaitable[Any]] | None = None  # (network, address) -> chain.WalletBalance
+    transfer_reader: Callable[..., Awaitable[Any]] | None = None  # (network, address, from_block, to_block, *, stop_at) -> chain.TransferScan
+    buyer_address: Callable[[str], str] | None = None  # network -> buyer wallet address
 
 
 async def purchase(deps: Deps, service_id: str, args: dict[str, Any], purchase_intent_id: str,
@@ -63,6 +67,7 @@ async def purchase(deps: Deps, service_id: str, args: dict[str, Any], purchase_i
     if service is None:
         return {"error": f"unknown service '{service_id}'", "safe_next_actions": [NextAction.HUMAN_REVIEW]}
     fp = fingerprint(service_id, args)
+    await audit.ensure_baseline(deps, service.network)  # wallet baseline before the first payment; no log scan
 
     async with LOCK:
         decision, row = _resolve_and_create(deps, service, args, fp, purchase_intent_id, task_id)

@@ -57,3 +57,5 @@ def test_safe_next_actions_never_pays(status, fulfillment, codes):
         assert acts == ["human_review"]
     if FindingCode.DUPLICATE_SUSPECTED in codes and status != PaymentStatus.REJECTED:
         assert acts[:2] == ["human_review", "report_to_seller"]
+    if FindingCode.SETTLEMENT_NOT_ON_CHAIN in codes and status != PaymentStatus.REJECTED:
+        assert acts[:2] == ["human_review", "report_to_seller"]  # wallet audit (#87): a false receipt needs a human

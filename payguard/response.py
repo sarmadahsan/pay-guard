@@ -24,8 +24,9 @@ def safe_next_actions(row: Purchase, findings: list[Finding]) -> list[str]:
     codes = {f.code for f in findings if f.resolved_at is None}
     if row.payment_status == PaymentStatus.REJECTED and row.reject_reason == RejectReason.SERVICE_QUARANTINED:
         acts = [NextAction.HUMAN_REVIEW]
-    elif codes & {FindingCode.PAID_NO_DELIVERY, FindingCode.FULFILLMENT_FAILED, FindingCode.DUPLICATE_SUSPECTED}:
-        acts = [NextAction.HUMAN_REVIEW, NextAction.REPORT_TO_SELLER]  # design §3: these three always get this pair
+    elif codes & {FindingCode.PAID_NO_DELIVERY, FindingCode.FULFILLMENT_FAILED, FindingCode.DUPLICATE_SUSPECTED,
+                  FindingCode.SETTLEMENT_NOT_ON_CHAIN}:
+        acts = [NextAction.HUMAN_REVIEW, NextAction.REPORT_TO_SELLER]  # design §3: these always get this pair
         if row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:
             acts.append(NextAction.RECONCILE)  # reconcile_purchase is allowed only while unknown
     elif row.payment_status == PaymentStatus.SETTLEMENT_UNKNOWN:

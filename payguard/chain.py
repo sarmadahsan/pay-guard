@@ -137,3 +137,102 @@ async def authorization_state(network: str, from_addr: str, nonce: str, pay_to: 
         if t is not None:
             limit = min(limit, t)
     return await asyncio.to_thread(_read, network, from_addr, nonce, pay_to, value_minor, since_ts, limit)
+
+
+# ---- wallet audit readers (issue #87). Read-only: balanceOf and Transfer/AuthorizationUsed logs. ----
+
+AUDIT_LOG_WINDOW = 200  # blocks per eth_getLogs call for the audit scan (inclusive range; the public RPC allows 200)
+AUDIT_MAX_WINDOWS = 150  # 30 000 blocks ≈ 16 h per call; the cursor is persisted, so the next call resumes
+BALANCE_OF_ABI = [{"name": "balanceOf", "type": "function", "stateMutability": "view",
+                   "inputs": [{"name": "account", "type": "address"}], "outputs": [{"name": "", "type": "uint256"}]}]
+
+
+@dataclass(frozen=True)
+class WalletBalance:
+    balance_minor: int
+    block_number: int  # the balance is read at exactly this block
+    block_timestamp: int
+
+
+@dataclass(frozen=True)
+class Transfer:
+    tx_hash: str
+    log_index: int
+    block_number: int
+    from_addr: str
+    to_addr: str
+    value_minor: int
+
+
+@dataclass(frozen=True)
+class TransferScan:
+    outgoing: list[Transfer]  # USDC Transfer(address -> *)
+    incoming: list[Transfer]  # USDC Transfer(* -> address)
+    nonces: dict[str, list[str]]  # tx_hash -> EIP-3009 nonces from AuthorizationUsed(address, nonce) in that tx
+    scanned_to: int  # last block fully covered; from_block - 1 when nothing was covered
+    complete: bool  # scanned_to reached to_block
+
+
+def _addr_of(topic: Any) -> str:
+    return Web3.to_checksum_address("0x" + _hex(topic)[-40:])
+
+
+def _transfer(lg: Any) -> Transfer:
+    topics = lg["topics"]
+    return Transfer(_hex(lg["transactionHash"]), int(lg["logIndex"]), int(lg["blockNumber"]), _addr_of(topics[1]),
+                    _addr_of(topics[2]), int.from_bytes(bytes(lg["data"]), "big"))
+
+
+def _read_balance(network: str, address: str) -> WalletBalance:
+    w3 = _w3(network)
+    usdc = Web3.to_checksum_address(USDC[network])
+    block = w3.eth.get_block("latest")
+    bn, ts = int(block["number"]), int(block["timestamp"])
+    bal = w3.eth.contract(address=usdc, abi=BALANCE_OF_ABI).functions.balanceOf(
+        Web3.to_checksum_address(address)).call(block_identifier=bn)
+    return WalletBalance(int(bal), bn, ts)
+
+
+def _scan_transfers(network: str, address: str, from_block: int, to_block: int, stop_at: float | None) -> TransferScan:
+    w3 = _w3(network)
+    usdc = Web3.to_checksum_address(USDC[network])
+    me = _topic_addr(address)
+    outgoing: list[Transfer] = []
+    incoming: list[Transfer] = []
+    nonces: dict[str, list[str]] = {}
+    start = max(0, from_block)
+    scanned_to = start - 1
+    for _ in range(AUDIT_MAX_WINDOWS):
+        if start > to_block or (stop_at is not None and time.monotonic() >= stop_at):
+            break
+        end = min(start + AUDIT_LOG_WINDOW - 1, to_block)
+        sent = w3.eth.get_logs({"address": usdc, "fromBlock": start, "toBlock": end,
+                                "topics": [[TOPIC_TRANSFER, TOPIC_USED], me]})
+        got = w3.eth.get_logs({"address": usdc, "fromBlock": start, "toBlock": end,
+                               "topics": [TOPIC_TRANSFER, None, me]})
+        for lg in sent:
+            topics = [_hex(t) for t in lg["topics"]]
+            if topics[0] == TOPIC_USED and len(topics) == 3:
+                nonces.setdefault(_hex(lg["transactionHash"]), []).append(topics[2])
+            elif topics[0] == TOPIC_TRANSFER and len(topics) == 3:
+                outgoing.append(_transfer(lg))
+        incoming.extend(_transfer(lg) for lg in got if len(lg["topics"]) == 3)
+        scanned_to = end
+        start = end + 1
+    return TransferScan(outgoing, incoming, nonces, scanned_to, scanned_to >= to_block)
+
+
+async def usdc_balance(network: str, address: str) -> WalletBalance:
+    """USDC balanceOf(address) at the latest block, with that block's number and timestamp."""
+    return await asyncio.to_thread(_read_balance, network, address)
+
+
+async def usdc_transfers(network: str, address: str, from_block: int, to_block: int, *,
+                         stop_at: float | None = None) -> TransferScan:
+    """USDC transfers from/to address plus AuthorizationUsed nonces in [from_block, to_block], in 200-block windows.
+    Stops early (complete=False) at stop_at, else the call deadline, else after READ_BUDGET_S."""
+    limit = time.monotonic() + READ_BUDGET_S
+    for t in (stop_at, CALL_DEADLINE.get()):
+        if t is not None:
+            limit = min(limit, t)
+    return await asyncio.to_thread(_scan_transfers, network, address, from_block, to_block, limit)
