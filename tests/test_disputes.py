@@ -529,6 +529,31 @@ async def test_file_for_purchase_is_serialized_per_purchase(deps, seller, contac
     assert [h["state"] for h in deps.repo.get_purchase(pid).history].count("DISPUTE_FILED") == 1
 
 
+async def test_auto_dispute_hooks_overlapping_on_one_purchase_send_once(deps, seller, contact_env):
+    import asyncio
+
+    from payguard.disputes import auto_dispute
+
+    _auto(_with_contact(deps), on=False)
+    r = await purchase(deps, "convert", {"doc_id": "d1", "pages": 20}, "i-convert")
+    pid = r["purchase_id"]
+    _auto(deps)
+    row = deps.repo.get_purchase(pid)
+
+    class SlowDryRun(DryRunBackend):
+        sends = 0
+
+        async def send_mail(self, **kw):
+            SlowDryRun.sends += 1
+            await asyncio.sleep(0.05)
+            return await super().send_mail(**kw)
+
+    backend = SlowDryRun(deps.artifact_dir)
+    deadline = time.monotonic() + 45.0
+    await asyncio.gather(auto_dispute(deps, row, deadline, backend), auto_dispute(deps, row, deadline, backend))
+    assert SlowDryRun.sends == 1 and len(_disputes(deps, pid)) == 1 and not _auto_failures(deps, pid)
+
+
 def test_render_email_for_a_refused_overcharge_claims_no_payment():
     bundle = {"purchase": {"purchase_id": "p1", "service_id": "report_premium", "attempt": 1, "args": {"ticker": "ACME"},
                            "payment_status": "REJECTED", "fulfillment_status": "PENDING", "paid": False,

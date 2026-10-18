@@ -265,26 +265,30 @@ async def auto_dispute(deps: Any, row: Purchase, deadline: float, backend: Backe
     Never changes the purchase outcome: a failure to send, or a call with too little budget left, is logged and
     recorded as SELLER_ERROR evidence with reason AUTO_FAILED (a terminal row gets no later pass, so the record is
     what tells the agent to call file_dispute itself). Creates no payment. Returns the (re-read) row.
+
+    The eligibility check, the filing and the failure record run under the same per-purchase lock as
+    file_for_purchase, so overlapping hooks (or a hook and the tool) cannot both send or both record a failure.
     """
     repo = deps.repo
     pid = row.purchase_id
-    try:
-        if not _wants_auto_dispute(deps, row):
-            return row
-        remaining = deadline - time.monotonic()
-        if remaining < AUTO_MIN_REMAINING_S:
-            raise TimeoutError(f"skipped: {remaining:.1f} s left of the call budget")
-        async with asyncio.timeout(remaining - 1.0):
-            result = await file_for_purchase(deps, pid, backend, filed_by="policy")
-        if "error" in result:
-            raise RuntimeError(result["error"])
-    except Exception as e:  # noqa: BLE001  (TimeoutError, backend errors, contact failures: the outcome stands)
-        log.warning("auto_dispute failed for %s: %s: %s", pid, type(e).__name__, e)
+    async with _FILE_LOCKS.setdefault(pid, asyncio.Lock()):
         try:
-            repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "auto_dispute", "reason": AUTO_FAILED,
-                                                                "error": f"{type(e).__name__}: {e}"[:500]})
-        except Exception:  # noqa: BLE001
-            log.exception("could not record the auto_dispute failure for %s", pid)
+            if not _wants_auto_dispute(deps, row):
+                return repo.get_purchase(pid) or row
+            remaining = deadline - time.monotonic()
+            if remaining < AUTO_MIN_REMAINING_S:
+                raise TimeoutError(f"skipped: {remaining:.1f} s left of the call budget")
+            async with asyncio.timeout(remaining - 1.0):
+                result = await _file_locked(deps, pid, backend, "policy")  # the lock is already ours
+            if "error" in result:
+                raise RuntimeError(result["error"])
+        except Exception as e:  # noqa: BLE001  (TimeoutError, backend errors, contact failures: the outcome stands)
+            log.warning("auto_dispute failed for %s: %s: %s", pid, type(e).__name__, e)
+            try:
+                repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "auto_dispute", "reason": AUTO_FAILED,
+                                                                    "error": f"{type(e).__name__}: {e}"[:500]})
+            except Exception:  # noqa: BLE001
+                log.exception("could not record the auto_dispute failure for %s", pid)
     return repo.get_purchase(pid) or row
 
 
