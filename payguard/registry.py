@@ -1,12 +1,15 @@
 """Allowlisted services (design §2). Hand-written; four demo services plus an optional Bazaar seller."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import quote
 
 from x402.mechanisms.evm.default_assets import DEFAULT_ASSETS
+
+logger = logging.getLogger(__name__)
 
 SEPOLIA = "eip155:84532"
 MAINNET = "eip155:8453"
@@ -56,9 +59,17 @@ def load_registry(base_url: str | None = None) -> dict[str, Service]:
     # --- Bazaar seller (M7): registered only when the probe's env lines are present ---
     bazaar_url = os.environ.get("BAZAAR_URL")
     if bazaar_url:
-        services.append(Service(
-            "bazaar", os.environ.get("BAZAAR_TOOL_NAME", "get_public_data"), "GET", bazaar_url, MAINNET, USDC[MAINNET],
-            int(os.environ["BAZAAR_PRICE_MINOR"]), os.environ.get("BAZAAR_CONTENT_TYPE", "application/json"),
-            ("non_empty", "content_hash"), 40.0,
-        ))
+        raw_price = os.environ.get("BAZAAR_PRICE_MINOR")
+        try:
+            price = int(raw_price) if raw_price is not None else 0
+        except ValueError:
+            price = 0
+        if price <= 0:
+            logger.warning("bazaar service skipped: BAZAAR_PRICE_MINOR must be a positive integer, got %r", raw_price)
+        else:
+            services.append(Service(
+                "bazaar", os.environ.get("BAZAAR_TOOL_NAME", "get_public_data"), "GET", bazaar_url, MAINNET, USDC[MAINNET],
+                price, os.environ.get("BAZAAR_CONTENT_TYPE", "application/json"),
+                ("non_empty", "content_hash"), 40.0,
+            ))
     return {s.id: s for s in services}

@@ -23,14 +23,41 @@ class Policy:
         return asdict(self)
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    def construct_mapping(self, node, deep=False):  # type: ignore[no-untyped-def]
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise ValueError(f"duplicate key in policy file: {key!r}")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+def _str_list(data: dict[str, Any], name: str) -> tuple[str, ...]:
+    value = data.get(name, [])
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError(f"{name} must be a list of strings")
+    return tuple(value)
+
+
+def _minor(data: dict[str, Any], name: str) -> int:
+    value = data.get(name)
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer of minor units")
+    return value
+
+
 def load_policy(path: str | Path) -> Policy:
-    data = yaml.safe_load(Path(path).read_text())
+    data = yaml.load(Path(path).read_text(), Loader=_UniqueKeyLoader)  # noqa: S506 - SafeLoader subclass
+    if not isinstance(data, dict):
+        raise ValueError("policy file must contain a mapping at the top level")
     return Policy(
         principal_id=str(data["principal_id"]),
-        total_budget_minor=int(data["total_budget_minor"]),
-        per_purchase_cap_minor=int(data["per_purchase_cap_minor"]),
-        allowed_networks=tuple(data.get("allowed_networks", [])),
-        allowed_services=tuple(data.get("allowed_services", [])),
+        total_budget_minor=_minor(data, "total_budget_minor"),
+        per_purchase_cap_minor=_minor(data, "per_purchase_cap_minor"),
+        allowed_networks=_str_list(data, "allowed_networks"),
+        allowed_services=_str_list(data, "allowed_services"),
     )
 
 

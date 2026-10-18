@@ -25,16 +25,16 @@ def buyer_account(network: str) -> LocalAccount:
     return Account.from_key(key)
 
 
-def client_for_account(account: LocalAccount) -> x402Client:
+def client_for_account(account: LocalAccount, network: str) -> x402Client:
     client = x402Client()
-    client.register("eip155:*", ExactEvmScheme(EthAccountSigner(account)))
+    client.register(network, ExactEvmScheme(EthAccountSigner(account)))
     client.set_spend_controls({"max_amount_per_payment": False})  # PayGuard owns the mandate (design §2)
     return client
 
 
 @lru_cache(maxsize=4)
 def build_client(network: str) -> x402Client:
-    return client_for_account(buyer_account(network))
+    return client_for_account(buyer_account(network), network)
 
 
 def buyer_address(network: str) -> str:

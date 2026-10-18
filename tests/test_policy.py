@@ -71,7 +71,7 @@ def test_load_policy_yaml(tmp_path):
     f.write_text("principal_id: demo\ntotal_budget_minor: 5000000\nper_purchase_cap_minor: 2500000\n"
                  "allowed_networks: ['eip155:84532']\nallowed_services: [report]\n")
     p = load_policy(f)
-    assert p.principal_id == "demo" and p.total_budget_minor == 5_000_000 and p.allowed_services == ("report",)
+    assert p == Policy("demo", 5_000_000, 2_500_000, ("eip155:84532",), ("report",))
 
 
 @pytest.mark.parametrize("bad", [-1_000_000, 0, True, 1.5, "500000"])
@@ -85,3 +85,57 @@ def test_non_positive_or_non_integer_amount_rejected(policy, reg, bad):
 def test_invalid_spent_is_caller_bug(policy, reg, bad):
     with pytest.raises(ValueError):
         check_mandate(policy, reg["report"], 500_000, USDC[SEPOLIA], spent_minor=bad)
+
+
+_BASE = "principal_id: d\ntotal_budget_minor: 5000000\nper_purchase_cap_minor: 2500000\n"
+
+
+@pytest.mark.parametrize("text", [
+    _BASE + "principal_id: dup\n",
+    "",
+    _BASE + "allowed_services: report\n",
+    _BASE + "allowed_networks: [1, 2]\n",
+    "principal_id: d\ntotal_budget_minor: 5000000\nper_purchase_cap_minor: 2.5\n",
+    "principal_id: d\ntotal_budget_minor: -1\nper_purchase_cap_minor: 5\n",
+    "principal_id: d\ntotal_budget_minor: true\nper_purchase_cap_minor: 5\n",
+    "principal_id: d\ntotal_budget_minor: 5\nper_purchase_cap_minor: -5\n",
+])
+def test_load_policy_rejects_invalid(tmp_path, text):
+    f = tmp_path / "policy.yaml"
+    f.write_text(text)
+    with pytest.raises(ValueError):
+        load_policy(f)
+
+
+def _bazaar_env(monkeypatch, price):
+    monkeypatch.setenv("BAZAAR_URL", "http://bazaar.test/x")
+    if price is None:
+        monkeypatch.delenv("BAZAAR_PRICE_MINOR", raising=False)
+    else:
+        monkeypatch.setenv("BAZAAR_PRICE_MINOR", price)
+
+
+@pytest.mark.parametrize("price", [None, "abc", "1.5", "0", "-3"])
+def test_bazaar_invalid_price_skipped(monkeypatch, caplog, price):
+    _bazaar_env(monkeypatch, price)
+    reg = load_registry(base_url="http://seller.test")
+    assert "bazaar" not in reg
+    assert set(reg) == {"report", "report_premium", "research", "convert"}
+    assert any("bazaar" in r.message.lower() for r in caplog.records)
+
+
+def test_bazaar_valid_price(monkeypatch):
+    _bazaar_env(monkeypatch, "10000")
+    reg = load_registry(base_url="http://seller.test")
+    assert reg["bazaar"].accepted_price_minor == 10_000
+
+
+def test_wallet_client_registers_only_requested_network():
+    from eth_account import Account
+
+    from payguard.registry import MAINNET
+    from payguard.wallet import client_for_account
+
+    c = client_for_account(Account.create(), SEPOLIA)
+    nets = {e["network"] for e in c.get_registered_schemes()[2]}
+    assert nets == {SEPOLIA} and MAINNET not in nets
