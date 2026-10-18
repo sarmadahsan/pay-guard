@@ -1,13 +1,26 @@
 """Task 7.1: the env-gated fourth paid tool (public Bazaar seller on Base mainnet)."""
 import importlib
 import os
+from pathlib import Path
 
 import pytest
-
-import payguard.server as _server_mod  # noqa: F401  (ensures the module is importable before reloads)
+from dotenv import dotenv_values
 
 BAZAAR_VARS = ("BAZAAR_URL", "BAZAAR_PAY_TO", "BAZAAR_PRICE_MINOR", "BAZAAR_CONTENT_TYPE", "BAZAAR_TOOL_NAME")
 TEST_URL = "https://example.invalid/x"
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+DOTENV_BAZAAR = {k: v for k, v in (dotenv_values(_ENV_FILE) if _ENV_FILE.exists() else {}).items() if k in BAZAAR_VARS and v}
+
+# Hermetic against an operator .env: payguard.server runs load_dotenv(.env) on import and that would register the
+# bazaar tool for every later test module (test_presentation, test_response_stats and test_schema sort after this
+# file and bind `mcp` at collection; no conftest edit is allowed here). Only BAZAAR_URL is blanked: the registry
+# treats empty as unset, load_dotenv never overrides an existing var, and the other vars are inert without a URL
+# (blanking BAZAAR_TOOL_NAME / BAZAAR_CONTENT_TYPE would instead become an empty name / content type).
+# A BAZAAR_URL exported by the caller is left alone.
+if "BAZAAR_URL" not in os.environ:
+    os.environ["BAZAAR_URL"] = ""
+
+import payguard.server as _server_mod  # noqa: E402,F401
 
 
 def _reload_server():
@@ -19,10 +32,11 @@ def _reload_server():
 @pytest.fixture
 def reload_server(monkeypatch):
     """Reload payguard.server under the current env; always leave sys.modules in the no-bazaar state."""
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)  # reloads must not re-read an operator .env
     yield _reload_server
     for var in BAZAAR_VARS:
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("BAZAAR_URL", "")  # empty == unset for the registry; load_dotenv will not override it
+    monkeypatch.setenv("BAZAAR_URL", "")
     _reload_server()
 
 
@@ -30,10 +44,17 @@ async def _tools(srv):
     return {t.name: t for t in await srv.mcp.list_tools()}
 
 
-@pytest.mark.skipif(not os.environ.get("BAZAAR_URL"), reason="BAZAAR_URL not set")
-async def test_real_env_registers_bazaar_tool(reload_server):
-    name = os.environ.get("BAZAAR_TOOL_NAME", "get_public_data")
+@pytest.mark.skipif(not (os.environ.get("BAZAAR_URL") or DOTENV_BAZAAR.get("BAZAAR_URL")), reason="no Bazaar config in env or .env")
+async def test_real_env_registers_bazaar_tool(monkeypatch, reload_server):
+    for k, v in DOTENV_BAZAAR.items():
+        if not os.environ.get(k):  # process env wins over .env
+            monkeypatch.setenv(k, v)
+    name = os.environ.get("BAZAAR_TOOL_NAME") or "get_public_data"
     tools = await _tools(reload_server())
+    price = os.environ.get("BAZAAR_PRICE_MINOR", "")
+    if not (price.isdigit() and int(price) > 0):
+        assert name not in tools
+        return
     assert name in tools
     assert set(tools[name].parameters["properties"]) == {"purchase_intent_id", "task_id"}
 
@@ -47,7 +68,7 @@ async def test_bazaar_tool_registered_with_exact_params(monkeypatch, reload_serv
     assert props == {"purchase_intent_id", "task_id"}
     assert not any("force" in p.lower() or "retry" in p.lower() for p in props)
     assert "mainnet" in tool.description
-    assert "0.001" in tool.description
+    assert "$0.001 USDC" in tool.description
 
 
 async def test_custom_tool_name_honored(monkeypatch, reload_server):
@@ -87,3 +108,22 @@ async def test_tool_routes_to_bazaar_service(monkeypatch, reload_server):
     monkeypatch.setattr(srv, "get_deps", lambda: "DEPS")
     await srv.mcp.call_tool("get_public_data", {"purchase_intent_id": "pi-1", "task_id": "t-1"})
     assert calls == [("DEPS", "bazaar", {}, "pi-1", "t-1")]
+
+
+@pytest.mark.parametrize("price,text", [("1000", "$0.001 USDC"), ("10000", "$0.01 USDC"), ("500000", "$0.50 USDC"),
+                                        ("1234567", "$1.234567 USDC"), ("2000000", "$2.00 USDC")])
+async def test_price_text_is_trimmed_integer_math(monkeypatch, reload_server, price, text):
+    monkeypatch.setenv("BAZAAR_URL", TEST_URL)
+    monkeypatch.setenv("BAZAAR_PRICE_MINOR", price)
+    monkeypatch.delenv("BAZAAR_TOOL_NAME", raising=False)
+    assert text in (await _tools(reload_server()))["get_public_data"].description
+
+
+@pytest.mark.parametrize("name", ["approve_it", "force_buy", "retry_data", "Get_Retry", "Bad-Name", "1abc", "has space", "Upper"])
+async def test_unsafe_tool_name_refused(monkeypatch, reload_server, name):
+    monkeypatch.setenv("BAZAAR_URL", TEST_URL)
+    monkeypatch.setenv("BAZAAR_PRICE_MINOR", "1000")
+    monkeypatch.setenv("BAZAAR_TOOL_NAME", name)
+    tools = await _tools(reload_server())
+    assert name not in tools and "get_public_data" not in tools
+    assert len(tools) == 9  # 3 paid + 6 admin, nothing extra

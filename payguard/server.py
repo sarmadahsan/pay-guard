@@ -15,6 +15,7 @@ configure_logging()  # before anything else can print
 import asyncio  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import time  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from typing import Annotated, Any, Literal  # noqa: E402
@@ -86,9 +87,22 @@ async def convert_document(doc_id: NonBlank, pages: Annotated[int, Field(ge=1)],
 
 
 # ---- fourth paid tool: a public Bazaar seller on Base mainnet (design §4, §8.7). Exists iff the registry has a `bazaar` service. ----
+_BAZAAR_NAME_OK = re.compile(r"^[a-z][a-z0-9_]*$")
+_BAZAAR_NAME_BANNED = ("approve", "force", "retry")  # never let an env value name a tool like an escape hatch
+
+
+def _format_usdc(minor: int) -> str:
+    """Integer minor units -> '1.234567', trailing zeros trimmed but at least 2 decimals (no floats)."""
+    frac = f"{minor % 1_000_000:06d}".rstrip("0").ljust(2, "0")
+    return f"{minor // 1_000_000}.{frac}"
+
+
 _bazaar = load_registry().get("bazaar")  # None when BAZAAR_URL is unset or BAZAAR_PRICE_MINOR is not a positive int
+if _bazaar is not None and (not _BAZAAR_NAME_OK.match(_bazaar.tool_name) or any(w in _bazaar.tool_name.lower() for w in _BAZAAR_NAME_BANNED)):
+    log.warning("bazaar tool not registered: unsafe BAZAAR_TOOL_NAME %r", _bazaar.tool_name)
+    _bazaar = None
 if _bazaar is not None:
-    _price = f"{_bazaar.accepted_price_minor // 1_000_000}.{_bazaar.accepted_price_minor % 1_000_000:06d}"  # integer math, no float
+    _price = _format_usdc(_bazaar.accepted_price_minor)
 
     @mcp.tool(name=_bazaar.tool_name,
               description=f"Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar ({_bazaar.url_template}): "
