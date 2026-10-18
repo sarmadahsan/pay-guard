@@ -207,7 +207,7 @@ async def test_malformed_quote_rejected_not_stuck(make_deps, case):
     assert seller.paid == [] and "payment_payload" not in kinds(deps, r["purchase_id"])
 
 
-@pytest.mark.parametrize("amount", ["0.5", "1e6", "-5", "", " 5", "1" * 31])
+@pytest.mark.parametrize("amount", ["0.5", "1e6", "-5", "", " 5", "1" * 31, "²", "５０００００", "٥٠٠٠٠٠"])
 async def test_non_digit_amount_is_price_mismatch(make_deps, amount):
     seller = FakeSeller()
     orig = seller._requirements
@@ -216,3 +216,37 @@ async def test_non_digit_amount_is_price_mismatch(make_deps, amount):
     r = await purchase(deps, "report", {"ticker": "A"}, "i")
     assert r["payment_status"] == "REJECTED" and r["reject_reason"] == "PRICE_MISMATCH" and seller.paid == []
     assert r["findings"][0]["evidence_ids"]
+
+
+def _stalling_deps(make_deps, monkeypatch, seller, stall_on):
+    import asyncio
+    import httpx
+    import payguard.purchase as pp
+
+    monkeypatch.setattr(pp, "clip_timeout", lambda _t, _d: 0.05)
+    deps = make_deps(seller)
+    stalled = []
+
+    async def handler(request):
+        paid = bool(request.headers.get("PAYMENT-SIGNATURE"))
+        if paid == (stall_on == "paid"):
+            stalled.append(request)
+            await asyncio.sleep(10)
+        return seller.handler(request)
+
+    deps.http_factory = lambda svc: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return deps, stalled
+
+
+async def test_stalled_quote_hits_absolute_deadline(make_deps, seller, monkeypatch):
+    deps, stalled = _stalling_deps(make_deps, monkeypatch, seller, "quote")
+    r = await purchase(deps, "report", {"ticker": "A"}, "i")
+    assert r["payment_status"] == "REJECTED" and r["reject_reason"] == "QUOTE_FAILED"
+    assert seller.paid == [] and "payment_payload" not in kinds(deps, r["purchase_id"])
+
+
+async def test_stalled_paid_request_hits_absolute_deadline(make_deps, seller, monkeypatch):
+    deps, stalled = _stalling_deps(make_deps, monkeypatch, seller, "paid")
+    r = await purchase(deps, "report", {"ticker": "A"}, "i")
+    assert r["payment_status"] == "SETTLEMENT_UNKNOWN" and "seller_error" in kinds(deps, r["purchase_id"])
+    assert len(stalled) == 1 and deps.repo.spent_minor("test") == 500_000

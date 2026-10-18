@@ -1,6 +1,7 @@
 """Paid request send and design §3 step 6 outcome classification. Shared by purchase.py and reconcile.py."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,7 +43,10 @@ class Outcome:
 async def send_paid_request(http: httpx.AsyncClient, method: str, url: str, body: dict[str, Any] | None,
                             header: str, timeout_s: float) -> Outcome:
     try:
-        resp = await http.request(method, url, json=body, headers={PAYMENT_SIGNATURE_HEADER: header}, timeout=timeout_s)
+        async with asyncio.timeout(timeout_s):  # absolute bound; httpx's own timeout is per-read inactivity only
+            resp = await http.request(method, url, json=body, headers={PAYMENT_SIGNATURE_HEADER: header}, timeout=timeout_s)
+    except TimeoutError:
+        return Outcome("error", error="TimeoutError: call budget exceeded")
     except httpx.HTTPError as e:
         return Outcome("error", error=f"{type(e).__name__}: {e}")
     return Outcome("response", resp.status_code, {k.lower(): v for k, v in resp.headers.items()},

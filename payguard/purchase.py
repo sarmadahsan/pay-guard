@@ -132,9 +132,11 @@ async def run_from_quote(deps: Deps, row: Purchase, service: Service, args: dict
     method, url, body = service.build_request(args)
     async with deps.http_factory(service) as http:
         # ---- 2. quote: unpaid request, version detection, decode, select option
+        quote_timeout = clip_timeout(service.timeout_s, deadline)
         try:
-            resp = await http.request(method, url, json=body, timeout=clip_timeout(service.timeout_s, deadline))
-        except httpx.HTTPError as e:
+            async with asyncio.timeout(quote_timeout):  # absolute bound; httpx's own timeout is per-read inactivity only
+                resp = await http.request(method, url, json=body, timeout=quote_timeout)
+        except (httpx.HTTPError, TimeoutError) as e:
             # A transient outage is not proof that the route is not x402: no finding, reject reason QUOTE_FAILED.
             repo.add_evidence(pid, EvidenceKind.SELLER_ERROR, {"stage": "quote", "error": f"{type(e).__name__}: {e}"})
             return _reject(repo, row, P.INTENT_RECORDED, RejectReason.QUOTE_FAILED,
