@@ -114,9 +114,12 @@ def test_new_intent_same_fingerprint_recent_unverified_is_duplicate(deps):
 
 
 def test_new_intent_same_fingerprint_unknown_reconciles_first(deps):
-    seed(deps.repo, P.SETTLEMENT_UNKNOWN, intent="old")
+    old = seed(deps.repo, P.SETTLEMENT_UNKNOWN, intent="old")
     d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
     assert d.action == "return" and d.reconcile_first
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new", after_reconcile=True)
+    assert d.action == "return" and not d.reconcile_first and d.row.purchase_id == old.purchase_id
+    assert deps.repo.has_finding(old.purchase_id, FindingCode.DUPLICATE_SUSPECTED)
 
 
 def test_new_intent_verified_pays_again_by_design(deps):
@@ -129,6 +132,36 @@ def test_duplicate_guard_window_is_15_minutes(deps):
     seed(deps.repo, P.SETTLED, FulfillmentStatus.FAILED, intent="old", age_s=16 * 60)
     d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
     assert d.action == "proceed"
+
+
+def test_duplicate_guard_window_14_minutes_still_duplicate(deps):
+    row = seed(deps.repo, P.SETTLED, FulfillmentStatus.FAILED, intent="old", age_s=14 * 60)
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "new")
+    assert d.action == "return" and d.row.purchase_id == row.purchase_id
+
+
+@pytest.mark.parametrize("old_status,other_status,other_fulfillment", [
+    (P.ABANDONED, P.SENT, FulfillmentStatus.PENDING),
+    (P.PAYMENT_FAILED, P.SETTLED, FulfillmentStatus.NO_DELIVERY),
+])
+def test_attempt_plus_one_still_hits_duplicate_guard(deps, old_status, other_status, other_fulfillment):
+    seed(deps.repo, old_status, intent="i1")
+    other = seed(deps.repo, other_status, other_fulfillment, intent="i2")
+    d = resolve_intent(deps, svc(deps), {"ticker": "ACME"}, FP, "i1")
+    assert d.action == "return" and d.row.purchase_id == other.purchase_id
+    assert deps.repo.has_finding(other.purchase_id, FindingCode.DUPLICATE_SUSPECTED)
+
+
+def test_repeat_under_active_quarantine_reuses_rejected_row(deps):
+    bad = seed(deps.repo, P.SETTLED, FulfillmentStatus.NO_DELIVERY, intent="old", fp="x" * 64, service="research")
+    deps.repo.add_finding(bad.purchase_id, FindingCode.PAID_NO_DELIVERY, "proven", "no artifact", [], ["human_review"])
+    fp2 = fingerprint("research", {"topic": "reworded"})
+    d1 = resolve_intent(deps, deps.registry["research"], {"topic": "reworded"}, fp2, "new")
+    d2 = resolve_intent(deps, deps.registry["research"], {"topic": "reworded"}, fp2, "new")
+    assert d1.row.purchase_id == d2.row.purchase_id and d2.action == "return" and d2.row.attempt == 1
+    assert [f.code for f in deps.repo.findings_for_purchase(d1.row.purchase_id)] == ["SERVICE_QUARANTINED"]
+    kinds = [e.payload.get("variant") for e in deps.repo.list_evidence(d1.row.purchase_id) if e.kind == "retry_blocked"]
+    assert kinds == ["quarantined", "quarantined_repeat"]
 
 
 def test_service_quarantine_rejects_new_purchase(deps):

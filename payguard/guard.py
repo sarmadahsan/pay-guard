@@ -75,9 +75,11 @@ def _quarantine(deps: Any, service: Service, args: dict[str, Any], fp: str, purc
         "variant": "quarantined", "service_id": service.id, "at": iso_now(),
         "blocking_findings": [{"finding_id": f["finding_id"], "purchase_id": f["purchase_id"], "evidence_ids": f["evidence_ids"]} for f in prior]})
     evidence_ids = [own_ev]
-    repo.update_status(row.purchase_id, P.INTENT_RECORDED, P.REJECTED,
-                       history_entry("REJECTED", reason=str(RejectReason.SERVICE_QUARANTINED), detail=summary),
-                       reject_reason=str(RejectReason.SERVICE_QUARANTINED))
+    if not repo.update_status(row.purchase_id, P.INTENT_RECORDED, P.REJECTED,
+                              history_entry("REJECTED", reason=str(RejectReason.SERVICE_QUARANTINED), detail=summary),
+                              reject_reason=str(RejectReason.SERVICE_QUARANTINED)):
+        log.warning("quarantine reject lost the compare-and-set for purchase %s; no finding added", row.purchase_id)
+        return repo.get_purchase(row.purchase_id)
     repo.add_finding(row.purchase_id, FindingCode.SERVICE_QUARANTINED, "proven", summary, evidence_ids, [NextAction.HUMAN_REVIEW])
     return repo.get_purchase(row.purchase_id)
 
@@ -95,8 +97,18 @@ def resolve_intent(deps: Any, service: Service, args: dict[str, Any], request_fi
         st = latest.payment_status
         if st == P.SETTLEMENT_UNKNOWN and not after_reconcile:
             return IntentDecision("return", row=latest, reconcile_first=True)
-        if st in (P.PAYMENT_FAILED, P.ABANDONED) or (st == P.REJECTED and latest.reject_reason == RejectReason.SERVICE_QUARANTINED):
-            attempt, supersedes = latest.attempt + 1, latest.purchase_id  # proven: no money moved (Sugg. 6); a lifted quarantine may retry
+        if st == P.REJECTED and latest.reject_reason == RejectReason.SERVICE_QUARANTINED:
+            if repo.has_unresolved_service_finding(principal, service.id, FindingCode.PAID_NO_DELIVERY):
+                # Still quarantined: reuse the rejected row, no new row or finding, only evidence + history.
+                repo.add_evidence(latest.purchase_id, EvidenceKind.RETRY_BLOCKED,
+                                  {"variant": "quarantined_repeat", "service_id": service.id, "at": iso_now(),
+                                   "purchase_intent_id": purchase_intent_id})
+                repo.append_history(latest.purchase_id, history_entry("retry_blocked", variant="quarantined_repeat",
+                                                                      purchase_intent_id=purchase_intent_id))
+                return IntentDecision("return", row=repo.get_purchase(latest.purchase_id))
+            attempt, supersedes = latest.attempt + 1, latest.purchase_id  # quarantine lifted; nothing was signed
+        elif st in (P.PAYMENT_FAILED, P.ABANDONED):
+            attempt, supersedes = latest.attempt + 1, latest.purchase_id  # proven: no money moved (Sugg. 6)
         elif _trips_guard(latest):
             # In flight, unknown, or settled-not-verified: PRD F7 / S1 attach DUPLICATE_SUSPECTED on every variant.
             # For an in-flight row the response still shows IN_PROGRESS (response.py maps IN_FLIGHT states).
@@ -108,16 +120,16 @@ def resolve_intent(deps: Any, service: Service, args: dict[str, Any], request_fi
     # ---- duplicate guard on (principal, fingerprint) within 15 minutes, any intent id ----
     # Runs BEFORE the quarantine so a same-topic retry under a new intent id returns the EXISTING record with
     # DUPLICATE_SUSPECTED (PRD metric 4, user story); only a reworded request reaches the quarantine.
-    if attempt == 1:
-        for cand in repo.find_recent_by_fingerprint(principal, request_fingerprint, now() - DUPLICATE_WINDOW_S):
-            if cand.purchase_intent_id == purchase_intent_id:
-                continue
-            if not _trips_guard(cand):
-                continue  # a verified purchase under a fresh intent pays again by design (Sugg. 9)
-            if cand.payment_status == P.SETTLEMENT_UNKNOWN and not after_reconcile:
-                return IntentDecision("return", row=cand, reconcile_first=True)
-            _mark_duplicate(deps, cand, "new_intent", purchase_intent_id)
-            return IntentDecision("return", row=repo.get_purchase(cand.purchase_id))
+    # Also runs for attempt+1 retries: another intent id may have an in-flight/unverified row for the same request.
+    for cand in repo.find_recent_by_fingerprint(principal, request_fingerprint, now() - DUPLICATE_WINDOW_S):
+        if cand.purchase_intent_id == purchase_intent_id:
+            continue
+        if not _trips_guard(cand):
+            continue  # a verified purchase under a fresh intent pays again by design (Sugg. 9)
+        if cand.payment_status == P.SETTLEMENT_UNKNOWN and not after_reconcile:
+            return IntentDecision("return", row=cand, reconcile_first=True)
+        _mark_duplicate(deps, cand, "new_intent", purchase_intent_id)
+        return IntentDecision("return", row=repo.get_purchase(cand.purchase_id))
 
     # ---- service quarantine (S3): before any quote for a new row ----
     if repo.has_unresolved_service_finding(principal, service.id, FindingCode.PAID_NO_DELIVERY):
