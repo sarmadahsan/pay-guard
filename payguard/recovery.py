@@ -35,9 +35,10 @@ def _phase1(deps: Any, stuck: list[Any]) -> list[str]:
             elif st in SIGNED_IN_FLIGHT:
                 if repo.update_status(row.purchase_id, st, P.SETTLEMENT_UNKNOWN,
                                       history_entry("SETTLEMENT_UNKNOWN", by="startup_recovery", reason=f"found {st} after restart")):
-                    _ensure_unknown_finding(repo, repo.get_purchase(row.purchase_id))
+                    # Queue for reconcile before anything else can fail: list_stuck no longer returns this row.
                     unknown.append(row.purchase_id)
                     log.info("startup recovery: %s %s -> SETTLEMENT_UNKNOWN", row.purchase_id, st)
+                    _ensure_unknown_finding(repo, repo.get_purchase(row.purchase_id))
         except Exception:  # noqa: BLE001 - one bad row must not abort the pass (CancelledError still propagates)
             log.exception("startup recovery: could not process %s", row.purchase_id)
     return unknown

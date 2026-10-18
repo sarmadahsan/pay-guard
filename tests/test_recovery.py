@@ -174,3 +174,26 @@ async def test_live_row_started_during_wait_is_left_alone(deps, monkeypatch):
     await run_startup_recovery(deps)
     assert deps.repo.get_purchase(live[0].purchase_id).payment_status == P.SENT
     assert deps.repo.get_purchase(young.purchase_id).payment_status == P.SETTLEMENT_UNKNOWN
+
+
+async def test_finding_failure_after_cas_still_reconciles(deps, monkeypatch):
+    # CodeRabbit PR #71: once the row is SETTLEMENT_UNKNOWN, list_stuck no longer returns it, so a failure while
+    # adding the finding must not drop it from phase 2 (reconcile_and_finish adds the finding itself).
+    from payguard import recovery as recovery_mod
+
+    calls = []
+
+    async def fake_reconcile(d, row, deadline):
+        calls.append(row.purchase_id)
+        return d.repo.get_purchase(row.purchase_id)
+
+    def boom(_repo, _row):
+        raise RuntimeError("finding write failed")
+
+    monkeypatch.setattr(reconcile_mod, "reconcile", fake_reconcile)
+    monkeypatch.setattr(recovery_mod, "_ensure_unknown_finding", boom)
+    row = seed(deps.repo, P.SENT, age_s=STALE_S + 5)
+    await run_startup_recovery(deps)
+    assert deps.repo.get_purchase(row.purchase_id).payment_status == P.SETTLEMENT_UNKNOWN
+    assert calls == [row.purchase_id]
+    assert any(f.code == "SETTLEMENT_UNKNOWN" for f in deps.repo.findings_for_purchase(row.purchase_id))
