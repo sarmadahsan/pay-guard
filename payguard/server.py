@@ -89,7 +89,7 @@ async def convert_document(doc_id: NonBlank, pages: Annotated[int, Field(ge=1)],
 # ---- Meridian Intel (hackathon demo): the double-charge seller on Base Sepolia. The function always exists (so a
 # BAZAAR_TOOL_NAME collision is refused below); it is exposed as a tool only when the registry has an `intel` service. ----
 async def get_intel_report(ticker: NonBlank, purchase_intent_id: NonBlank, task_id: str | None = None) -> dict[str, Any]:
-    return await purchase(get_deps(), "intel", {"ticker": ticker}, purchase_intent_id, task_id)
+    return await purchase(get_deps(), "intel", {"ticker": ticker.strip().upper()}, purchase_intent_id, task_id)
 
 
 def _register_intel_tool() -> None:

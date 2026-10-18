@@ -135,8 +135,8 @@ async def test_intel_tool_routes_to_intel_service(monkeypatch, reload_server):
 
     monkeypatch.setattr(srv, "purchase", fake_purchase)
     monkeypatch.setattr(srv, "get_deps", lambda: "DEPS")
-    await srv.mcp.call_tool("get_intel_report", {"ticker": "NVDA", "purchase_intent_id": "pi-1", "task_id": "t-1"})
-    assert calls == [("DEPS", "intel", {"ticker": "NVDA"}, "pi-1", "t-1")]
+    await srv.mcp.call_tool("get_intel_report", {"ticker": " nvda ", "purchase_intent_id": "pi-1", "task_id": "t-1"})
+    assert calls == [("DEPS", "intel", {"ticker": "NVDA"}, "pi-1", "t-1")]  # normalized like get_company_report: same fingerprint
 
 
 async def test_list_services_shows_intel_on_sepolia(monkeypatch, reload_server, deps):
