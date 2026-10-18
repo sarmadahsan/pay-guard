@@ -84,14 +84,16 @@ async def _poll(deps: Any, reader: Any, row: Purchase, pp: dict[str, Any], deadl
 
 
 def _settle_from_chain(repo: Any, row: Purchase, state: ChainState) -> Purchase:
+    # the tx's own block; state.block_number is only the head the check read from (fallback if the log had none)
+    block = state.event_block if state.event_block is not None else state.block_number
     if not repo.update_status(row.purchase_id, P.SETTLEMENT_UNKNOWN, P.SETTLED,
-                              history_entry("SETTLED", via="chain_check", tx=state.tx_hash, block=state.block_number),
+                              history_entry("SETTLED", via="chain_check", tx=state.tx_hash, block=block),
                               settlement_tx=state.tx_hash):
         log.warning("compare-and-set lost for %s (SETTLED via chain); leaving row as is", row.purchase_id)
         return repo.get_purchase(row.purchase_id)
     repo.add_evidence(row.purchase_id, EvidenceKind.SETTLEMENT, {
-        "source": "chain:AuthorizationUsed+Transfer", "transaction": state.tx_hash, "block_number": state.block_number,
-        "block_timestamp": state.block_timestamp, "network": row.network})
+        "source": "chain:AuthorizationUsed+Transfer", "transaction": state.tx_hash, "block_number": block,
+        "checked_at_block": state.block_number, "block_timestamp": state.block_timestamp, "network": row.network})
     repo.resolve_findings(row.purchase_id, FindingCode.SETTLEMENT_UNKNOWN)
     return repo.get_purchase(row.purchase_id)
 

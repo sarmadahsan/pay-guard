@@ -17,13 +17,14 @@ TX = "0x" + "c1" * 32
 _PROVEN = object()  # sentinel: an explicit event=None must mean "no event found", not "default to proven"
 
 
-def st(used, block, ts, event=_PROVEN, tx=None, transfer_ok=None):
+def st(used, block, ts, event=_PROVEN, tx=None, transfer_ok=None, event_block=None):
     """ChainState factory. used=True without an explicit event defaults to a proven transfer (event 'used', tx, transfer_ok True)."""
     if event is _PROVEN:
         event = None
         if used:
             event, tx, transfer_ok = "used", TX, True
-    return ChainState(used=used, block_number=block, block_timestamp=ts, event=event, tx_hash=tx, transfer_ok=transfer_ok)
+    return ChainState(used=used, block_number=block, block_timestamp=ts, event=event, tx_hash=tx, transfer_ok=transfer_ok,
+                      event_block=event_block)
 
 
 def chain_seq(*states):
@@ -44,6 +45,20 @@ def hist(deps, pid):
 
 def codes(deps, pid):
     return [(f.code, f.resolved_at is None) for f in deps.repo.findings_for_purchase(pid)]
+
+
+async def test_settlement_reports_the_event_block_not_the_head_block(make_deps):
+    from payguard.response import build_response
+
+    seller = FakeSeller(mode="timeout")
+    deps = make_deps(seller, chain_reader=chain_seq(st(True, 900, int(time.time()), event_block=894)))
+    r = await purchase(deps, "research", {"topic": "agents"}, "i1")
+    assert r["payment_status"] == "SETTLED"
+    ev = [e.payload for e in deps.repo.list_evidence(r["purchase_id"]) if e.kind == "settlement"][-1]
+    assert ev["block_number"] == 894 and ev["checked_at_block"] == 900
+    assert [h for h in deps.repo.get_purchase(r["purchase_id"]).history if h["state"] == "SETTLED"][-1]["block"] == 894
+    resp = build_response(deps, deps.repo.get_purchase(r["purchase_id"]))
+    assert resp["transactions"][0]["block_number"] == 894
 
 
 async def test_used_event_with_matching_transfer_settles_and_no_artifact_is_paid_no_delivery(make_deps):
@@ -396,7 +411,7 @@ def test_chain_event_in_second_window(fake_w3):
 
 def test_chain_nothing_found_returns_unproven(fake_w3):
     eth = fake_w3(FakeEth(True, [auth_log("used", HEAD - 20, nonce="0x" + "ee" * 32)]))  # other nonce only
-    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None, True)
+    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None, True, None)
     assert len(eth.log_queries) == 3 and eth.log_queries[-1]["toBlock"] == HEAD  # windows cover exactly the range
     s = _read()
     assert (s.used, s.event, s.tx_hash, s.transfer_ok, s.search_complete) == (True, None, None, None, True)
@@ -405,7 +420,7 @@ def test_chain_nothing_found_returns_unproven(fake_w3):
 def test_chain_max_windows_exhausted_is_incomplete(fake_w3, monkeypatch):
     monkeypatch.setattr(chain, "MAX_WINDOWS", 2)
     eth = fake_w3(FakeEth(True))
-    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None, False)
+    assert chain._find_event(eth_w3(eth), USDC[SEPOLIA], BUYER, NONCE, PAYEE, 750_000, HEAD - 250, HEAD) == (None, None, None, False, None)
     assert len(eth.log_queries) == 2
 
 

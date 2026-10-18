@@ -50,6 +50,9 @@ class ChainState:
     # False when the log search stopped (call deadline or MAX_WINDOWS) before covering the whole range: then
     # event=None means "not looked at", not "no event exists". Only meaningful when used is True.
     search_complete: bool = True
+    # Block of the matching AuthorizationUsed/Canceled log (the tx's block). block_number above is the head block
+    # the check read from, which is what expiry logic needs; this is what a settlement is reported at.
+    event_block: int | None = None
 
 
 @lru_cache(maxsize=4)
@@ -79,29 +82,30 @@ def _is_transfer(lg: Any, usdc: str, from_addr: str, pay_to: str, value_minor: i
 
 def _find_event(w3: Any, usdc: str, from_addr: str, nonce_hex: str, pay_to: str, value_minor: int,
                 from_block: int, to_block: int, stop_at: float | None = None
-                ) -> tuple[str | None, str | None, bool | None, bool]:
+                ) -> tuple[str | None, str | None, bool | None, bool, int | None]:
     """Search AuthorizationUsed / AuthorizationCanceled for (from, nonce) in small windows; verify the Transfer.
-    Returns (event, tx_hash, transfer_ok, search_complete). stop_at is a time.monotonic() value: once it passes
+    Returns (event, tx_hash, transfer_ok, search_complete, event_block). stop_at is a time.monotonic() value: once it passes
     the search stops and reports search_complete=False, which is never the same as "nothing found"."""
     start = max(0, from_block)
     for _ in range(MAX_WINDOWS):
         if start > to_block:
             break
         if stop_at is not None and time.monotonic() >= stop_at:
-            return None, None, None, False
+            return None, None, None, False, None
         end = min(start + LOG_WINDOW - 1, to_block)
         logs = w3.eth.get_logs({"address": usdc, "fromBlock": start, "toBlock": end,
                                 "topics": [[TOPIC_USED, TOPIC_CANCELED], _topic_addr(from_addr), nonce_hex]})
         if logs:
             lg = logs[0]
             tx_hash = _hex(lg["transactionHash"])
+            event_block = int(lg["blockNumber"])
             if _hex(lg["topics"][0]) == TOPIC_CANCELED:
-                return "canceled", tx_hash, False, True
+                return "canceled", tx_hash, False, True, event_block
             receipt = w3.eth.get_transaction_receipt(lg["transactionHash"])
             ok = any(_is_transfer(t, usdc, from_addr, pay_to, value_minor) for t in receipt["logs"])
-            return "used", tx_hash, ok, True
+            return "used", tx_hash, ok, True, event_block
         start = end + 1
-    return None, None, None, start > to_block  # MAX_WINDOWS exhausted before to_block: incomplete
+    return None, None, None, start > to_block, None  # MAX_WINDOWS exhausted before to_block: incomplete
 
 
 def _read(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int, since_ts: float,
@@ -117,9 +121,9 @@ def _read(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: in
     if not used:
         return ChainState(False, bn, ts)
     from_block = bn - math.ceil(max(0.0, time.time() - since_ts) / BLOCK_TIME_S) - START_MARGIN_BLOCKS
-    event, tx_hash, ok, complete = _find_event(w3, usdc, from_addr, nonce_hex, pay_to, int(value_minor),
+    event, tx_hash, ok, complete, event_block = _find_event(w3, usdc, from_addr, nonce_hex, pay_to, int(value_minor),
                                                from_block, bn, stop_at)
-    return ChainState(True, bn, ts, event, tx_hash, ok, complete)
+    return ChainState(True, bn, ts, event, tx_hash, ok, complete, event_block)
 
 
 async def authorization_state(network: str, from_addr: str, nonce: str, pay_to: str, value_minor: int,
