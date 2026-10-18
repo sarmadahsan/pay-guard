@@ -17,6 +17,7 @@ from payguard.models import (
     IN_FLIGHT,
     SIGNED_IN_FLIGHT,
     UNSIGNED_IN_FLIGHT,
+    EvidenceKind,
     FindingCode,
     PaymentStatus,
     Purchase,
@@ -88,10 +89,14 @@ def _unknown_candidates(deps: Any) -> list[Purchase]:
         ids += [r.purchase_id for r in repo.list_purchases(principal, limit=UNKNOWN_SCAN_LIMIT)
                 if r.payment_status == P.SETTLEMENT_UNKNOWN]
         rows = [repo.get_purchase(pid) for pid in dict.fromkeys(ids)]
+        # reconcile cannot act on a row with no stored signed payload (it leaves it for human review): skip it so it
+        # never uses a retry slot ahead of a row that can be reconciled
+        rows = [r for r in rows if _stale_unknown(r) and any(e.kind == EvidenceKind.PAYMENT_PAYLOAD
+                                                              for e in repo.list_evidence(r.purchase_id))]
     except Exception:  # noqa: BLE001 - a store error skips this pass; it must not kill the recovery task
         log.exception("startup recovery: could not list SETTLEMENT_UNKNOWN rows")
         return []
-    return sorted((r for r in rows if _stale_unknown(r)), key=lambda r: r.updated_at)
+    return sorted(rows, key=lambda r: r.updated_at)
 
 
 async def _retry_unknown(deps: Any, candidates: list[Purchase], exclude: set[str]) -> None:

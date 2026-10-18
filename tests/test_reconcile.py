@@ -729,10 +729,40 @@ async def test_registry_entry_from_another_event_loop_is_ignored(make_deps):
     deps.chain_reader = chain_seq(st(True, 9, int(time.time())))
     dead = asyncio.new_event_loop()
     try:
-        rc._RUNNING[row.purchase_id] = dead.create_future()  # left behind by a loop that closed mid-reconcile
+        rc._RUNNING[row.purchase_id] = (dead.create_future(), 0)  # left behind by a loop that closed mid-reconcile
         got = await asyncio.wait_for(reconcile(deps, row, time.monotonic() + 45), timeout=5)
     finally:
         rc._RUNNING.pop(row.purchase_id, None)
         dead.close()
     assert got.payment_status == "SETTLED"
     assert "reconcile_joined" not in hist(deps, row.purchase_id)
+
+
+async def test_late_joiner_does_not_resend_after_the_leaders_resend(make_deps):
+    import asyncio
+
+    import payguard.reconcile as rc
+
+    deps, seller, row = await _unknown_row(make_deps)
+    gate = asyncio.Event()
+    calls = []
+
+    async def reader(network, from_addr, nonce, pay_to, value_minor, since_ts):
+        calls.append(nonce)
+        if len(calls) == rc.POLL_ATTEMPTS + 1:  # the leader's post-resend read: hold it here
+            await gate.wait()
+        return st(False, 2, int(time.time()))
+
+    deps.chain_reader = reader
+    seller.paid_modes = ["timeout", "ok"]  # the leader's resend does not settle; a second resend would
+    paid_before = len(seller.paid)
+    leader = asyncio.create_task(reconcile(deps, row, time.monotonic() + 45))
+    while len(calls) <= rc.POLL_ATTEMPTS:  # the leader has resent and is in its last read
+        await asyncio.sleep(0)
+    joiner = asyncio.create_task(reconcile(deps, row, time.monotonic() + 45))  # arrives after the resend
+    await asyncio.sleep(0.01)
+    gate.set()
+    a, b = await asyncio.gather(leader, joiner)
+    assert a.payment_status == b.payment_status == "SETTLEMENT_UNKNOWN"
+    assert len(seller.paid) == paid_before + 1  # only the leader's resend
+    assert rc._RUNNING == {}

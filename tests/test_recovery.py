@@ -379,3 +379,17 @@ async def test_settled_old_rows_are_not_candidates(deps, caplog):
     with caplog.at_level("INFO", logger="payguard.recovery"):
         await run_startup_recovery(deps)
     assert "startup recovery: nothing to do" in caplog.text
+
+
+async def test_unknown_rows_without_payment_payload_do_not_use_retry_slots(deps):
+    calls = []
+    deps.chain_reader = _proven_reader(calls)
+    # older rows reconcile can never act on (no signed payload stored): they must not crowd out the real one
+    for i in range(recovery_mod.UNKNOWN_RETRY_MAX):
+        r = seed(deps.repo, P.SETTLEMENT_UNKNOWN, intent=f"nopayload{i}")
+        _ensure_unknown_finding(deps.repo, deps.repo.get_purchase(r.purchase_id))
+        _backdate(deps.repo, r.purchase_id, STALE_S + 500 - i)
+    row = _old_unknown(deps.repo, "haspayload")
+    await run_startup_recovery(deps)
+    assert deps.repo.get_purchase(row.purchase_id).payment_status == P.SETTLED
+    assert len(calls) == 1

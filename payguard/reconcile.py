@@ -156,20 +156,22 @@ def _decide_consumed(repo: Any, row: Purchase, state: ChainState) -> Purchase:
     return _consumed_unproven(repo, row, state)
 
 
-# purchase_id -> future resolved (always with None) when that purchase's running reconcile ends. Entries are removed
-# in a finally on success, error and cancellation alike, so nothing outlives the call or its event loop.
-_RUNNING: dict[str, asyncio.Future[None]] = {}
+# purchase_id -> (future resolved (always with None) when that purchase's running reconcile ends, RESEND evidence count
+# when that leader started). Entries are removed in a finally on success, error and cancellation alike, so nothing
+# outlives the call or its event loop. The baseline is the leader's, so a joiner arriving after the leader's resend
+# still sees that resend.
+_RUNNING: dict[str, tuple[asyncio.Future[None], int]] = {}
 
 
 async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
     """Single-flight entry point: lead a reconcile for row.purchase_id, or join the one already running."""
     pid = row.purchase_id
     loop = asyncio.get_running_loop()
-    while (running := _RUNNING.get(pid)) is not None:
+    while (entry := _RUNNING.get(pid)) is not None:
+        running, resends = entry
         if running.get_loop() is not loop:  # left by a loop that closed mid-reconcile: it can never resolve here
             del _RUNNING[pid]
             break
-        resends = _resend_count(deps.repo, pid)
         row = await _join(deps, row, running, deadline)
         # Lead ourselves only if the leader ended without a resend (e.g. it was out of budget) and we have room
         # for one; after the leader's resend a second one is never made by a joiner.
@@ -177,11 +179,11 @@ async def reconcile(deps: Any, row: Purchase, deadline: float) -> Purchase:
                 or _resend_count(deps.repo, pid) != resends or time.monotonic() + RESEND_TIMEOUT_S >= deadline):
             return row
     done: asyncio.Future[None] = loop.create_future()
-    _RUNNING[pid] = done
+    _RUNNING[pid] = (done, _resend_count(deps.repo, pid))
     try:
         return await _reconcile(deps, row, deadline)
     finally:
-        if _RUNNING.get(pid) is done:
+        if (cur := _RUNNING.get(pid)) is not None and cur[0] is done:
             del _RUNNING[pid]
         if not done.done():
             done.set_result(None)  # never an exception: joiners only need "it ended"
