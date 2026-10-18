@@ -46,10 +46,11 @@ def test_safe_next_actions_never_pays(status, fulfillment, codes):
     row.payment_status, row.fulfillment_status, row.valid_before = status, fulfillment, int(time.time()) + 300
     if status == PaymentStatus.REJECTED:
         row.reject_reason = RejectReason.SERVICE_QUARANTINED
-    findings = [Finding("f", row.purchase_id, c, "proven", "s", [], [], time.time()) for c in codes]
+    findings = [Finding(finding_id="f", purchase_id=row.purchase_id, code=c, severity="proven", summary="s",
+                       evidence_ids=[], safe_next_actions=[], created_at=time.time()) for c in codes]
     acts = safe_next_actions(row, findings)
     assert acts and all(a.startswith(SAFE_NEXT_ACTION_PREFIXES) for a in acts)
-    assert not any("pay" in a or "retry" in a for a in acts)
+    assert not any("pay" in a.lower() or "retry" in a.lower() for a in acts)
     if status == PaymentStatus.SETTLEMENT_UNKNOWN:
         assert "reconcile_purchase" in acts
     if status == PaymentStatus.REJECTED:
