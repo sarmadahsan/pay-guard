@@ -15,6 +15,7 @@ configure_logging()  # before anything else can print
 import asyncio  # noqa: E402
 import logging  # noqa: E402
 import os  # noqa: E402
+import re  # noqa: E402
 import time  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from typing import Annotated, Any, Literal  # noqa: E402
@@ -27,6 +28,7 @@ from payguard import recovery  # noqa: E402
 from payguard.deps import get_deps  # noqa: E402
 from payguard.models import PaymentStatus  # noqa: E402
 from payguard.purchase import CALL_BUDGET_S, purchase, reconcile_and_finish  # noqa: E402
+from payguard.registry import load_registry  # noqa: E402
 from payguard.response import budget_summary, build_response, compact_purchase  # noqa: E402
 
 log = logging.getLogger("payguard.server")
@@ -84,7 +86,32 @@ async def convert_document(doc_id: NonBlank, pages: Annotated[int, Field(ge=1)],
     return await purchase(get_deps(), "convert", {"doc_id": doc_id.strip(), "pages": int(pages)}, purchase_intent_id, task_id)
 
 
-# The fourth paid tool (public Bazaar seller on Base mainnet) is registered in M7 (Task 7.1).
+# ---- fourth paid tool: a public Bazaar seller on Base mainnet (design §4, §8.7). Exists iff the registry has a `bazaar` service. ----
+_BAZAAR_NAME_OK = re.compile(r"[a-z][a-z0-9_]*")  # used with fullmatch: `$` would accept a trailing newline
+_BAZAAR_NAME_BANNED = ("approve", "force", "retry")  # never let an env value name a tool like an escape hatch
+
+
+def _format_usdc(minor: int) -> str:
+    """Integer minor units -> '1.234567', trailing zeros trimmed but at least 2 decimals (no floats)."""
+    frac = f"{minor % 1_000_000:06d}".rstrip("0").ljust(2, "0")
+    return f"{minor // 1_000_000}.{frac}"
+
+
+def _register_bazaar_tool() -> None:
+    """Called at the end of the module so the name check sees every other tool (FastMCP replaces duplicates)."""
+    bazaar = load_registry().get("bazaar")  # None when BAZAAR_URL is unset or BAZAAR_PRICE_MINOR is not a positive int
+    if bazaar is None:
+        return
+    name = bazaar.tool_name
+    if not _BAZAAR_NAME_OK.fullmatch(name) or any(w in name.lower() for w in _BAZAAR_NAME_BANNED) or name in globals():
+        log.warning("bazaar tool not registered: unsafe or already-used BAZAAR_TOOL_NAME %r", name)
+        return
+
+    @mcp.tool(name=name,
+              description=f"Buy from a public x402 seller on Base mainnet discovered via the CDP Bazaar ({bazaar.url_template}): "
+                          f"${_format_usdc(bazaar.accepted_price_minor)} USDC. This seller has never heard of PayGuard. {REUSE}", app=UI)
+    async def get_public_data(purchase_intent_id: NonBlank, task_id: str | None = None) -> dict[str, Any]:
+        return await purchase(get_deps(), "bazaar", {}, purchase_intent_id, task_id)
 
 
 # ---- admin tools (design §6). None can approve a second payment (review S8). ----
@@ -137,6 +164,8 @@ async def reconcile_purchase(purchase_id: str) -> dict[str, Any]:
 def purchases_view() -> str:
     return (Path(__file__).parent / "ui" / "purchases.html").read_text(encoding="utf-8")
 
+
+_register_bazaar_tool()  # last, after every other tool and module name exists
 
 if __name__ == "__main__":
     mcp.run()  # stdio
