@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from payguard import artifacts
+from payguard import artifacts, presentation
 from payguard.models import (
     IN_FLIGHT,
     SAFE_NEXT_ACTION_PREFIXES,
@@ -123,13 +123,24 @@ def compact_purchase(deps: Any, row: Purchase) -> dict[str, Any]:
     verification = [e.payload for e in evidence if e.kind == EvidenceKind.VALIDATOR]
     findings = deps.repo.findings_for_purchase(row.purchase_id)
     tx = transaction_summary(row, evidence)
+    delivery = delivery_summary(row, verification, findings)
+    status = _status_label(row)
     return {"purchase_id": row.purchase_id, "purchase_intent_id": row.purchase_intent_id, "service_id": row.service_id,
-            "attempt": row.attempt, "payment_status": _status_label(row),
+            "attempt": row.attempt, "payment_status": status,
             "fulfillment_status": str(row.fulfillment_status),
-            "delivery_level": delivery_summary(row, verification, findings)["level"],
+            "delivery_level": delivery["level"],
             "amount_usdc": usdc(row.authorized_amount_minor), "settlement_tx": row.settlement_tx,
             "proof": tx[0]["proof"] if tx else None, "explorer_url": explorer_url(row),
-            "unresolved_findings": [f.code for f in findings if f.resolved_at is None], "created_at": row.created_at}
+            "unresolved_findings": [f.code for f in findings if f.resolved_at is None], "created_at": row.created_at,
+            "failed_checks": delivery["failed"], **_presentation(row, status, delivery, tx, findings)}
+
+
+def _presentation(row: Purchase, status: str, delivery: dict[str, Any], tx: list[dict[str, Any]],
+                  findings: list[Finding]) -> dict[str, Any]:
+    return {"risk": presentation.risk(status, delivery, tx, findings),
+            "headline": presentation.headline(payment_status=status, service_id=row.service_id, args=row.args,
+                                              delivery=delivery, transactions=tx, findings=findings,
+                                              reject_reason=row.reject_reason)}
 
 
 def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
@@ -140,7 +151,10 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
     art = artifacts.load_latest(repo, row.purchase_id)
     status = _status_label(row)
     settled = row.payment_status == PaymentStatus.SETTLED
+    tx = transaction_summary(row, evidence)
+    delivery = delivery_summary(row, verification, findings)
     return {
+        **_presentation(row, status, delivery, tx, findings),
         "purchase_id": row.purchase_id,
         "purchase_intent_id": row.purchase_intent_id,
         "service_id": row.service_id,
@@ -161,7 +175,7 @@ def build_response(deps: Any, row: Purchase) -> dict[str, Any]:
         "findings": [f.to_dict() for f in findings],
         "artifact": art.summary() if art else None,
         "safe_next_actions": safe_next_actions(row, findings),
-        "transactions": transaction_summary(row, evidence),
-        "delivery": delivery_summary(row, verification, findings),
+        "transactions": tx,
+        "delivery": delivery,
         "budget": budget_summary(deps),
     }

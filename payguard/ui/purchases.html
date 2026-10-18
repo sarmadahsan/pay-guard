@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PayGuard purchases</title>
+<!--
+  MCP Apps view (io.modelcontextprotocol/ui, protocol 2026-01-26) for PayGuard tool results.
+  Self-contained: inline CSS and JS only, no external scripts, styles or fonts.
+  Read-only by design: it renders results and opens explorer links. It never calls a tool, so it can never spend money.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea; --card: #f7f7f9;
+    --green: #1f9d55; --green-bg: #e6f6ec; --amber: #b7791f; --amber-bg: #fdf3e1;
+    --red: #d93025; --red-bg: #fde8e7; --bar: #4f6bed; --link: #2f5bd3;
+  }
+  :root[data-theme="dark"] {
+    --bg: #1c1c1e; --fg: #f2f2f7; --muted: #a1a1a6; --line: #38383a; --card: #2c2c2e;
+    --green: #4cc38a; --green-bg: #143224; --amber: #f0b04a; --amber-bg: #3a2c12;
+    --red: #ff6b5e; --red-bg: #3d1a17; --bar: #7d93ff; --link: #8fa8ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { padding: 10px 12px; }
+  .muted { color: var(--muted); }
+  .budget { margin-bottom: 10px; }
+  .budget .label { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; margin-bottom: 4px; }
+  .track { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .fill { height: 100%; background: var(--bar); }
+  .fill.over { background: var(--red); }
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  li { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; align-items: start;
+    padding: 8px 10px; border-radius: 8px; background: var(--card); border-left: 4px solid var(--line); }
+  li.green { border-left-color: var(--green); }
+  li.amber { border-left-color: var(--amber); }
+  li.red { border-left-color: var(--red); }
+  .badge { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 6px; border-radius: 4px;
+    text-transform: uppercase; white-space: nowrap; margin-top: 1px; }
+  .badge.green { color: var(--green); background: var(--green-bg); }
+  .badge.amber { color: var(--amber); background: var(--amber-bg); }
+  .badge.red { color: var(--red); background: var(--red-bg); }
+  .title { font-weight: 600; overflow-wrap: anywhere; }
+  .meta { grid-column: 2; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--muted); }
+  .meta b { color: var(--fg); font-weight: 500; }
+  .failed { color: var(--red); }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .empty, .error { padding: 6px 0; }
+  .error { color: var(--red); }
+</style>
+</head>
+<body>
+<main id="root"><div class="muted">Waiting for PayGuard result…</div></main>
+<script>
+(function () {
+  "use strict";
+  var PROTOCOL = "2026-01-26";
+  var root = document.getElementById("root");
+  var nextId = 1;
+  var pending = {};
+
+  function send(msg) { window.parent.postMessage(Object.assign({ jsonrpc: "2.0" }, msg), "*"); }
+  function request(method, params) {
+    var id = nextId++;
+    send({ id: id, method: method, params: params || {} });
+    return new Promise(function (resolve, reject) { pending[id] = { resolve: resolve, reject: reject }; });
+  }
+  function notify(method, params) { send({ method: method, params: params || {} }); }
+
+  function applyTheme(ctx) {
+    var theme = ctx && ctx.theme;
+    if (!theme && window.matchMedia) theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
+  }
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = String(text);
+    return e;
+  }
+  function metaItem(label, value, cls) {
+    var s = el("span", cls);
+    s.appendChild(document.createTextNode(label + " "));
+    s.appendChild(el("b", null, value));
+    return s;
+  }
+  // Strips the leading risk emoji: the coloured badge already carries it.
+  function plainHeadline(h) { return String(h || "").replace(/^\S+\s/, ""); }
+  function riskOf(p) { return p.risk === "green" || p.risk === "red" ? p.risk : "amber"; }
+  function safeHttps(url) { return typeof url === "string" && /^https:\/\//.test(url) ? url : null; }
+
+  // A single purchase result (paid tools, get_purchase, reconcile_purchase) mapped onto the list row shape.
+  function fromSingle(r) {
+    var d = r.delivery || {};
+    var tx = (r.transactions || [])[0] || {};
+    return {
+      risk: r.risk, headline: r.headline, service_id: r.service_id, payment_status: r.payment_status,
+      amount_usdc: tx.amount_usdc || r.settled_amount_usdc, delivery_level: d.level,
+      failed_checks: d.failed || [], proof: tx.proof || null, explorer_url: r.explorer_url,
+      settlement_tx: r.settlement_tx, unresolved_findings: (r.findings || []).filter(function (f) { return f.resolved_at == null; })
+        .map(function (f) { return f.code; })
+    };
+  }
+
+  // Integer-only USDC (6 decimals), same as payguard.response.usdc.
+  function usdc(minor) {
+    var n = Math.abs(minor), frac = String(n % 1000000);
+    while (frac.length < 6) frac = "0" + frac;
+    return (minor < 0 ? "-" : "") + Math.floor(n / 1000000) + "." + frac;
+  }
+
+  function renderBudget(b) {
+    if (!b || typeof b.total_budget_minor !== "number") return null;
+    var wrap = el("div", "budget");
+    var label = el("div", "label");
+    label.appendChild(el("span", null, "Spent " + b.spent_usdc + " of " + usdc(b.total_budget_minor) + " USDC"));
+    label.appendChild(el("span", "muted", b.remaining_usdc + " left"));
+    var pct = b.total_budget_minor > 0 ? Math.min(100, Math.max(0, 100 * b.spent_minor / b.total_budget_minor)) : 100;
+    var track = el("div", "track");
+    var fill = el("div", "fill" + (b.remaining_minor < 0 ? " over" : ""));
+    fill.style.width = pct.toFixed(1) + "%";
+    track.appendChild(fill);
+    wrap.appendChild(label);
+    wrap.appendChild(track);
+    return wrap;
+  }
+
+  function proofText(p) {
+    if (p.proof === "chain_check") return "on-chain";
+    if (p.proof === "seller_receipt") return "seller receipt";
+    if (p.proof === "pending") return "pending";
+    return "none";
+  }
+
+  function renderRow(p) {
+    var r = riskOf(p);
+    var li = el("li", r);
+    li.appendChild(el("span", "badge " + r, r));
+    li.appendChild(el("div", "title", plainHeadline(p.headline) || p.service_id));
+    var meta = el("div", "meta");
+    meta.appendChild(metaItem("service", p.service_id));
+    if (p.amount_usdc) meta.appendChild(metaItem("amount", p.amount_usdc + " USDC"));
+    meta.appendChild(metaItem("status", p.payment_status));
+    meta.appendChild(metaItem("delivery", p.delivery_level || "none"));
+    if (p.failed_checks && p.failed_checks.length) meta.appendChild(metaItem("failed", p.failed_checks.join(", "), "failed"));
+    meta.appendChild(metaItem("proof", proofText(p)));
+    var url = safeHttps(p.explorer_url);
+    if (url) {
+      var a = el("a", null, "explorer ↗");
+      a.href = url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        request("ui/open-link", { url: url }).catch(function () { window.open(url, "_blank", "noopener"); });
+      });
+      meta.appendChild(a);
+    }
+    li.appendChild(meta);
+    return li;
+  }
+
+  function render(data) {
+    root.textContent = "";
+    if (!data || typeof data !== "object") { root.appendChild(el("div", "muted", "No PayGuard data in this result.")); return reportSize(); }
+    if (data.error) { root.appendChild(el("div", "error", data.error)); return reportSize(); }
+    var budget = renderBudget(data.budget);
+    if (budget) root.appendChild(budget);
+    var rows = Array.isArray(data.purchases) ? data.purchases : (data.purchase_id ? [fromSingle(data)] : []);
+    if (!rows.length) { root.appendChild(el("div", "empty muted", "No purchases yet.")); return reportSize(); }
+    var ul = el("ul");
+    rows.forEach(function (p) { ul.appendChild(renderRow(p)); });
+    root.appendChild(ul);
+    reportSize();
+  }
+
+  function structured(result) {
+    if (!result) return null;
+    if (result.structuredContent) return result.structuredContent;
+    var text = (result.content || []).filter(function (c) { return c.type === "text"; })[0];
+    if (!text) return null;
+    try { return JSON.parse(text.text); } catch (e) { return null; }
+  }
+
+  var lastHeight = 0;
+  function reportSize() {
+    var h = Math.ceil(document.documentElement.getBoundingClientRect().height);
+    if (h !== lastHeight) { lastHeight = h; notify("ui/notifications/size-changed", { height: h }); }
+  }
+  if (window.ResizeObserver) new ResizeObserver(reportSize).observe(document.documentElement);
+
+  window.addEventListener("message", function (ev) {
+    if (ev.source !== window.parent) return;
+    var m = ev.data;
+    if (!m || m.jsonrpc !== "2.0") return;
+    if (m.id !== undefined && !m.method) {  // response to one of our requests
+      var p = pending[m.id];
+      if (p) { delete pending[m.id]; m.error ? p.reject(m.error) : p.resolve(m.result); }
+      return;
+    }
+    switch (m.method) {
+      case "ui/notifications/tool-result": render(structured(m.params)); break;
+      case "ui/notifications/host-context-changed": applyTheme(m.params); break;
+      case "ui/notifications/tool-cancelled": root.textContent = ""; root.appendChild(el("div", "muted", "Cancelled.")); reportSize(); break;
+      case "ui/resource-teardown": case "ping": send({ id: m.id, result: {} }); break;
+      default: if (m.id !== undefined) send({ id: m.id, error: { code: -32601, message: "Method not found" } });
+    }
+  });
+
+  applyTheme(null);
+  request("ui/initialize", {
+    protocolVersion: PROTOCOL,
+    appInfo: { name: "payguard-purchases", version: "0.1.0" },
+    appCapabilities: {}
+  }).then(function (res) {
+    applyTheme(res && res.hostContext);
+    notify("ui/notifications/initialized", {});
+    reportSize();
+  }).catch(function (err) {
+    root.textContent = "";
+    root.appendChild(el("div", "error", "PayGuard view could not connect to the host: " + ((err && err.message) || err)));
+  });
+})();
+</script>
+</body>
+</html>
